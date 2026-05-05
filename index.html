@@ -967,4 +967,107 @@ function App() {
           <div>
             {activeProject ? <div>
               <span style={{fontSize:"16px",fontWeight:700}}>{activeProject.name}</span>
-              {est ? <span style={{color:C.tm,fontSize:"14px"}}> / {est.name}</span> 
+              {est ? <span style={{color:C.tm,fontSize:"14px"}}> / {est.name}</span> : null}
+            </div> : <span style={{color:C.tm}}>Выберите проект</span>}
+          </div>
+          <div style={{display:"flex",gap:"6px",alignItems:"center"}}>
+            {replBadge > 0 ? <span style={{padding:"4px 10px",borderRadius:"16px",background:"#fff7ed",color:"#9a3412",fontSize:"12px",fontWeight:700,border:"1px solid #fed7aa"}}>{"⚠"} {replBadge} замен</span> : null}
+            {items.length>0&&role!=="foreman"?<button type="button" onClick={function(){setShowExport(true)}} style={{background:"#22c55e",border:"none",color:"#fff",fontSize:"12px",fontWeight:700,padding:"6px 12px",borderRadius:C.rs}}>{"📤"} Excel</button>:null}
+          </div>
+        </div>
+
+        {syncMsg?<div style={{background:"#ecfdf5",borderBottom:"1px solid #a7f3d0",padding:"10px 24px",fontSize:"14px",fontWeight:600,color:"#065f46"}}>{"✅"} {syncMsg}</div>:null}
+
+        <div style={{padding:"16px 24px",maxWidth:"1200px",margin:"0 auto"}}>
+          {/* Модальное окно экспорта */}
+          {showExport?<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}} onClick={function(){setShowExport(false)}}>
+            <div style={Object.assign({},cardS,{maxWidth:"480px",width:"100%"})} onClick={function(e){e.stopPropagation()}}>
+              <h3 style={{margin:"0 0 16px"}}>{"📤"} Выгрузка в Excel</h3>
+              <div style={{marginBottom:"16px"}}>
+                <label style={lblS}>Тип позиций</label>
+                <div style={{display:"flex",gap:"4px",flexWrap:"wrap"}}>
+                  {[{key:"all",label:"Все типы",color:"#64748b"}].concat(TYPES).map(function(t){
+                    var ac=expType===t.key;
+                    return <button type="button" key={t.key} onClick={function(){setExpType(t.key)}} style={{padding:"6px 12px",borderRadius:"16px",fontSize:"12px",fontWeight:600,border:ac?"2px solid "+t.color:"1px solid "+C.brd,background:ac?t.color:"#fff",color:ac?"#fff":t.color}}>{t.label}</button>;
+                  })}
+                </div>
+              </div>
+              <div style={{marginBottom:"20px"}}>
+                <label style={lblS}>Статус</label>
+                <div style={{display:"flex",gap:"4px",flexWrap:"wrap"}}>
+                  {[{key:"all",label:"Все статусы",color:"#64748b"}].concat(STATUSES).map(function(s){
+                    var ac=expStatus===s.key;
+                    return <button type="button" key={s.key} onClick={function(){setExpStatus(s.key)}} style={{padding:"6px 12px",borderRadius:"16px",fontSize:"12px",fontWeight:600,border:ac?"2px solid "+s.color:"1px solid "+C.brd,background:ac?s.color:"#fff",color:ac?"#fff":s.color}}>{s.icon?s.icon+" ":""}{s.label}</button>;
+                  })}
+                </div>
+              </div>
+              <div style={{fontSize:"13px",color:C.tm,marginBottom:"16px"}}>
+                Позиций для выгрузки: {items.filter(function(i){return(expType==="all"||i.type===expType)&&(expStatus==="all"||i.status===expStatus)}).length} из {items.length}
+              </div>
+              <div style={{display:"flex",gap:"8px"}}>
+                <button type="button" onClick={doExport} style={Object.assign({},btnP,{background:"#22c55e"})}>{"📥"} Скачать Excel</button>
+                <button type="button" onClick={function(){setShowExport(false)}} style={{padding:"10px 20px",background:"#f1f5f9",color:C.txt,border:"none",borderRadius:C.rs,fontWeight:600}}>Отмена</button>
+              </div>
+            </div>
+          </div>:null}
+
+          {/* Модальные окна */}
+          {showNewProject?<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}} onClick={function(){setShowNewProject(false)}}>
+            <div style={Object.assign({},cardS,{maxWidth:"520px",width:"100%"})} onClick={function(e){e.stopPropagation()}}>
+              <h3 style={{margin:"0 0 16px"}}>Новый проект</h3>
+              <input value={newProjectName} onChange={function(e){setNewProjectName(e.target.value)}} placeholder="Напр.: Бассейн «Лазурный»" onKeyDown={function(e){if(e.key==="Enter")createProject()}} style={Object.assign({},inputS,{marginBottom:"16px"})} />
+              <div style={{display:"flex",gap:"8px"}}>
+                <button type="button" onClick={createProject} disabled={!newProjectName.trim()} style={Object.assign({},btnP,{opacity:newProjectName.trim()?1:0.5})}>Создать</button>
+                <button type="button" onClick={function(){setShowNewProject(false)}} style={{padding:"10px 20px",background:"#f1f5f9",color:C.txt,border:"none",borderRadius:C.rs,fontWeight:600}}>Отмена</button>
+              </div>
+            </div>
+          </div>:null}
+
+          {showNewEst?<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}} onClick={function(){setShowNewEst(false)}}>
+            <div style={Object.assign({},cardS,{maxWidth:"520px",width:"100%"})} onClick={function(e){e.stopPropagation()}}>
+              <h3 style={{margin:"0 0 16px"}}>Новая смета в «{activeProject?activeProject.name:""}»</h3>
+              <input value={newEstName} onChange={function(e){setNewEstName(e.target.value)}} placeholder="Напр.: Этап 1 — Водоподготовка" onKeyDown={function(e){if(e.key==="Enter")createEstimate()}} style={Object.assign({},inputS,{marginBottom:"16px"})} />
+              <div style={{display:"flex",gap:"8px"}}>
+                <button type="button" onClick={createEstimate} disabled={!newEstName.trim()} style={Object.assign({},btnP,{opacity:newEstName.trim()?1:0.5})}>Создать</button>
+                <button type="button" onClick={function(){setShowNewEst(false)}} style={{padding:"10px 20px",background:"#f1f5f9",color:C.txt,border:"none",borderRadius:C.rs,fontWeight:600}}>Отмена</button>
+              </div>
+            </div>
+          </div>:null}
+
+          {/* Контент */}
+          {!activeProject ? <div style={Object.assign({},cardS,{textAlign:"center",padding:"60px"})}>
+            <div style={{fontSize:"48px",marginBottom:"12px"}}>{"📁"}</div>
+            <h2 style={{margin:"0 0 8px",fontSize:"20px"}}>Добро пожаловать, {profile.full_name}!</h2>
+            <p style={{color:C.tm,margin:"0 0 20px"}}>{rc.canCreate?"Создайте проект, чтобы начать":"Проектов пока нет. Менеджер добавит их."}</p>
+            {rc.canCreate?<button type="button" onClick={function(){setShowNewProject(true)}} style={btnP}>+ Создать проект</button>:null}
+          </div> : !est ? <div style={Object.assign({},cardS,{textAlign:"center",padding:"60px"})}>
+            <div style={{fontSize:"48px",marginBottom:"12px"}}>{"📄"}</div>
+            <h2 style={{margin:"0 0 8px",fontSize:"20px"}}>{activeProject.name}</h2>
+            <p style={{color:C.tm,margin:"0 0 20px"}}>{rc.canCreate?"Добавьте смету в проект":"Смет пока нет."}</p>
+            {rc.canCreate?<button type="button" onClick={function(){setShowNewEst(true)}} style={btnP}>+ Добавить смету</button>:null}
+          </div> : <div>
+            <div style={{display:"flex",gap:"2px",background:"#f1f5f9",borderRadius:"10px",padding:"3px",marginBottom:"16px"}}>
+              {tabs.map(function(tab){
+                var active=activeTab===tab.key;
+                if(tab.key==="upload"&&!rc.canCreate) return null;
+                if(tab.key==="summary"&&role==="foreman") return null;
+                return <button type="button" key={tab.key} onClick={function(){setActiveTab(tab.key)}} style={{flex:1,padding:"10px 8px",border:"none",borderRadius:C.rs,fontWeight:600,fontSize:"13px",background:active?"#fff":"transparent",color:active?C.p:C.tm,boxShadow:active?"0 1px 3px rgba(0,0,0,.06)":"none"}}>
+                  {tab.icon} {tab.label} {tab.count!=null?" ("+tab.count+")":""}
+                </button>;
+              })}
+            </div>
+            {activeTab==="upload"&&rc.canCreate ? <UploadModule onImport={handleImport} itemCount={items.length} /> : null}
+            {activeTab==="tracker" ? <TrackerModule items={items} comments={comments} role={role} onUpdateItem={updateItem} onAddComment={addComment} /> : null}
+            {activeTab==="summary" ? <SummaryModule items={items} /> : null}
+          </div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+var root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(React.createElement(App));
+</script>
+</body>
+</html>
