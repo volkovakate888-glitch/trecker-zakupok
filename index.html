@@ -1,13 +1,970 @@
--- ═══════════════════════════════════════════════
--- МИГРАЦИЯ v3: Статусы работ для прораба
--- Запустите в SQL Editor Supabase
--- ═══════════════════════════════════════════════
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Трекер закупок по сметам</title>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f8fafc}
+button{cursor:pointer;font-family:inherit}
+input,textarea{font-family:inherit}
+input:focus,textarea:focus{border-color:#2563eb!important;outline:none;box-shadow:0 0 0 3px rgba(37,99,235,.1)}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{width:20px;height:20px;border:3px solid #e2e8f0;border-top-color:#2563eb;border-radius:50%;animation:spin .6s linear infinite;display:inline-block}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+.fade-in{animation:fadeIn .2s ease}
+</style>
+</head>
+<body>
+<div id="root"></div>
 
--- Статус выполнения работ (для прораба)
-alter table public.items add column if not exists work_status text default 'not_started' check (work_status in ('not_started','in_progress','done'));
+<script type="text/babel" data-type="module">
+/* ═══════════════════════════════════════
+   ТРЕКЕР ЗАКУПОК ПО СМЕТАМ v4
+   Проекты → Сметы → Позиции
+   ═══════════════════════════════════════ */
 
--- Дата начала работ
-alter table public.items add column if not exists work_start_date date;
+var useState = React.useState;
+var useMemo = React.useMemo;
+var useRef = React.useRef;
+var useCallback = React.useCallback;
+var useEffect = React.useEffect;
 
--- Дата, к которой нужно завершить работу
-alter table public.items add column if not exists work_due_date date;
+// ═══════════════════════════
+// SUPABASE
+// ═══════════════════════════
+var SUPABASE_URL = "https://tdsajtejgjnhsgozfpgr.supabase.co";
+var SUPABASE_KEY = "sb_publishable_5M1hZaPnUy6dy9nRaBIdvQ_J7VqkizI";
+var sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// ─── Конфигурация ───
+var STATUSES = [
+  { key: "not_ordered", label: "Не заказано", color: "#ef4444", bg: "#fef2f2", icon: "⭕" },
+  { key: "ordered",     label: "Заказано",    color: "#f59e0b", bg: "#fffbeb", icon: "📝" },
+  { key: "in_transit",  label: "В пути",      color: "#3b82f6", bg: "#eff6ff", icon: "🚚" },
+  { key: "delivered",   label: "Доставлено",  color: "#22c55e", bg: "#f0fdf4", icon: "📦" },
+  { key: "installed",   label: "Смонтировано",color: "#8b5cf6", bg: "#f5f3ff", icon: "✅" },
+];
+
+var CERTS = [
+  { key: "none",      label: "Нет",      color: "#ef4444" },
+  { key: "requested", label: "Запрошен", color: "#f59e0b" },
+  { key: "received",  label: "Получен",  color: "#22c55e" },
+];
+
+var WORK_STATUSES = [
+  { key: "not_started", label: "Не начато",  color: "#94a3b8", bg: "#f8fafc", icon: "⏳" },
+  { key: "in_progress", label: "В работе",   color: "#f59e0b", bg: "#fffbeb", icon: "🔨" },
+  { key: "done",        label: "Выполнено",  color: "#22c55e", bg: "#f0fdf4", icon: "✅" },
+];
+
+var TYPES = [
+  { key: "work",      label: "Работа",           color: "#6366f1", prefixes: ["ФЕР"] },
+  { key: "transport", label: "Перевозка",         color: "#78716c", prefixes: ["ФССЦпг"] },
+  { key: "material",  label: "Материал",          color: "#0891b2", prefixes: ["ФССЦ"] },
+  { key: "equipment", label: "Оборудование/ОПТК", color: "#d946ef", prefixes: ["расчет", "Расчет"] },
+];
+
+var ROLE_CONFIG = {
+  manager: { label: "Менеджер",    canEdit: true,  canReplace: true,  canCreate: true  },
+  owner:   { label: "Собственник", canEdit: false, canReplace: false, canCreate: false },
+  foreman: { label: "Прораб",      canEdit: true,  canReplace: false, canCreate: false },
+};
+
+// ─── Утилиты ───
+function fmt(n) { if (n == null || isNaN(n)) return "—"; return Number(n).toLocaleString("ru-RU", {minimumFractionDigits:2, maximumFractionDigits:2}); }
+function fmtS(n) { if (n == null || isNaN(n)) return "—"; if (Math.abs(n)>=1e6) return (n/1e6).toFixed(2)+" млн"; if (Math.abs(n)>=1e3) return (n/1e3).toFixed(1)+" тыс"; return fmt(n); }
+function pct(a,b) { return b ? Math.round(a/b*100) : 0; }
+function daysLeft(ds) { if (!ds) return null; return Math.ceil((new Date(ds)-new Date())/864e5); }
+function detectType(code) {
+  if (!code) return "work";
+  for (var i = 0; i < TYPES.length; i++) {
+    for (var j = 0; j < TYPES[i].prefixes.length; j++) {
+      if (code.indexOf(TYPES[i].prefixes[j]) === 0) return TYPES[i].key;
+    }
+  }
+  return "work";
+}
+function typeInfo(key) { return TYPES.find(function(t){return t.key===key}) || TYPES[0]; }
+function sortItems(items) {
+  return items.slice().sort(function(a,b) {
+    var ca = (a.custom_made && a.status==="not_ordered") ? 0 : 1;
+    var cb = (b.custom_made && b.status==="not_ordered") ? 0 : 1;
+    if (ca !== cb) return ca - cb;
+    var pa = a.priority==="high"?0:a.priority==="normal"?1:2;
+    var pb = b.priority==="high"?0:b.priority==="normal"?1:2;
+    if (pa !== pb) return pa - pb;
+    return (a.sort_order||0) - (b.sort_order||0);
+  });
+}
+
+// ─── Стили ───
+var C = { p:"#2563eb", d:"#ef4444", s:"#22c55e", w:"#f59e0b", brd:"#e2e8f0", txt:"#0f172a", ts:"#475569", tm:"#94a3b8", r:"12px", rs:"8px" };
+var cardS = {background:"#fff",borderRadius:C.r,border:"1px solid "+C.brd,boxShadow:"0 1px 3px rgba(0,0,0,.06)",padding:"20px"};
+var inputS = {border:"1px solid "+C.brd,borderRadius:C.rs,padding:"8px 12px",fontSize:"14px",width:"100%",boxSizing:"border-box"};
+var lblS = {fontSize:"12px",fontWeight:600,color:C.tm,display:"block",marginBottom:"4px"};
+var btnP = {padding:"10px 20px",background:C.p,color:"#fff",border:"none",borderRadius:C.rs,fontSize:"14px",fontWeight:600};
+
+// ═══════════════════════════
+// КОМПОНЕНТ ВЫБОРА ДАТЫ
+// ═══════════════════════════
+var MONTHS_RU = ["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
+var DAYS_RU = ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"];
+
+function DatePicker(props) {
+  var _s1 = useState(false), open = _s1[0], setOpen = _s1[1];
+  var today = new Date();
+  var cur = props.value ? new Date(props.value + "T00:00:00") : null;
+  var _s2 = useState(cur ? cur.getFullYear() : today.getFullYear()), year = _s2[0], setYear = _s2[1];
+  var _s3 = useState(cur ? cur.getMonth() : today.getMonth()), month = _s3[0], setMonth = _s3[1];
+  function prevMonth() { if (month===0){setMonth(11);setYear(year-1)} else setMonth(month-1) }
+  function nextMonth() { if (month===11){setMonth(0);setYear(year+1)} else setMonth(month+1) }
+  function pick(d) { var m=month+1; props.onChange(year+"-"+(m<10?"0"+m:m)+"-"+(d<10?"0"+d:d)); setOpen(false); }
+  var firstDay = new Date(year,month,1).getDay();
+  var startOff = (firstDay+6)%7;
+  var dim = new Date(year,month+1,0).getDate();
+  var cells=[]; for(var b=0;b<startOff;b++) cells.push(null); for(var d=1;d<=dim;d++) cells.push(d);
+  var dv = ""; if(props.value){var pp=props.value.split("-"); if(pp.length===3) dv=pp[2]+"."+pp[1]+"."+pp[0]}
+  return (
+    <div style={{position:"relative"}}>
+      <button type="button" onClick={function(){setOpen(!open)}} style={Object.assign({},inputS,{background:"#fff",textAlign:"left",cursor:"pointer",color:dv?C.txt:C.tm})}>
+        {dv||"дд.мм.гггг"} <span style={{position:"absolute",right:"10px",top:"50%",transform:"translateY(-50%)",fontSize:"14px"}}>{"📅"}</span>
+      </button>
+      {open ? <div style={{position:"absolute",top:"100%",left:0,zIndex:60,background:"#fff",border:"1px solid "+C.brd,borderRadius:C.r,boxShadow:"0 8px 24px rgba(0,0,0,.15)",padding:"12px",width:"280px",marginTop:"4px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"8px"}}>
+          <button type="button" onClick={prevMonth} style={{background:"transparent",border:"none",fontSize:"18px",padding:"4px 8px",color:C.ts}}>{"◀"}</button>
+          <span style={{fontWeight:700,fontSize:"14px"}}>{MONTHS_RU[month]} {year}</span>
+          <button type="button" onClick={nextMonth} style={{background:"transparent",border:"none",fontSize:"18px",padding:"4px 8px",color:C.ts}}>{"▶"}</button>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"1px",marginBottom:"4px"}}>
+          {DAYS_RU.map(function(dn){return <div key={dn} style={{textAlign:"center",fontSize:"11px",fontWeight:700,color:C.tm,padding:"4px 0"}}>{dn}</div>})}
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"2px"}}>
+          {cells.map(function(day,idx){
+            if(day===null) return <div key={"e"+idx}/>;
+            var iT=day===today.getDate()&&month===today.getMonth()&&year===today.getFullYear();
+            var iS=cur&&day===cur.getDate()&&month===cur.getMonth()&&year===cur.getFullYear();
+            return <button type="button" key={idx} onClick={pick.bind(null,day)} style={{width:"34px",height:"34px",border:"none",borderRadius:"50%",fontSize:"13px",fontWeight:iS||iT?700:400,background:iS?C.p:iT?"#e0e7ff":"transparent",color:iS?"#fff":iT?C.p:C.txt,cursor:"pointer"}}>{day}</button>;
+          })}
+        </div>
+        <div style={{display:"flex",gap:"6px",marginTop:"8px",borderTop:"1px solid "+C.brd,paddingTop:"8px"}}>
+          <button type="button" onClick={function(){pick(today.getDate());setMonth(today.getMonth());setYear(today.getFullYear())}} style={{flex:1,padding:"6px",background:"#f1f5f9",border:"none",borderRadius:C.rs,fontSize:"12px",fontWeight:600,color:C.ts}}>Сегодня</button>
+          <button type="button" onClick={function(){props.onChange("");setOpen(false)}} style={{flex:1,padding:"6px",background:"#fef2f2",border:"none",borderRadius:C.rs,fontSize:"12px",fontWeight:600,color:C.d}}>Очистить</button>
+          <button type="button" onClick={function(){setOpen(false)}} style={{flex:1,padding:"6px",background:"#f1f5f9",border:"none",borderRadius:C.rs,fontSize:"12px",fontWeight:600,color:C.ts}}>Закрыть</button>
+        </div>
+      </div> : null}
+    </div>
+  );
+}
+
+// ═══════════════════════════
+// ПАРСЕР ЛСР
+// ═══════════════════════════
+function parseLSR(wb, sheetName) {
+  var ws = wb.Sheets[sheetName];
+  var range = XLSX.utils.decode_range(ws["!ref"]);
+  function cell(r,c) { var a=XLSX.utils.encode_cell({r:r,c:c}); var v=ws[a]; return v?v.v:null; }
+  var eName=sheetName, oName="";
+  for(var r=0;r<Math.min(30,range.e.r);r++){
+    var a=cell(r,0);
+    if(a&&String(a).indexOf("ЛОКАЛЬНЫЙ СМЕТНЫЙ РАСЧЕТ")>=0) eName=String(a);
+    if(a&&String(a).indexOf("наименование работ")>=0&&r>20){var prev=cell(r-1,0);if(prev)oName=String(prev).trim()}
+    if(r>=24&&r<=30&&a&&String(a).indexOf("(")<0&&String(a).length>5&&!oName) oName=String(a).trim();
+  }
+  var hRow=-1;
+  for(var r2=35;r2<Math.min(50,range.e.r);r2++){var a2=cell(r2,0);if(a2&&String(a2).indexOf("п/п")>=0){hRow=r2;break}}
+  if(hRow===-1) return {items:[],name:eName,objectName:oName};
+  var items=[],curSec="",lastIdx=-1;
+  for(var r3=hRow+3;r3<=range.e.r;r3++){
+    var av=cell(r3,0),bv=cell(r3,1),cv=cell(r3,2),fv=cell(r3,5),gv=cell(r3,6),iv=cell(r3,8),lv=cell(r3,11),nv=cell(r3,13);
+    if(av&&typeof av==="string"&&av.indexOf("Раздел")>=0){curSec=String(av).trim();continue}
+    if(cv&&(String(cv).indexOf("Итого по разделу")>=0||String(cv).indexOf("ВСЕГО")>=0)) continue;
+    if(av!=null&&bv!=null&&cv!=null){
+      var as=String(av).trim(),num=parseInt(as);
+      if(!isNaN(num)&&as.length<=4&&String(bv).trim().length>2){
+        var code=String(bv).trim(),tp=detectType(code);
+        items.push({num:as,code:code,name:String(cv).trim(),unit:fv?String(fv).trim():"",
+          quantity:typeof gv==="number"?gv:parseFloat(String(gv||0).replace(",","."))||0,
+          quantity_total:typeof iv==="number"?iv:parseFloat(String(iv||0).replace(",","."))||0,
+          total_base:null,total:null,type:tp,section:curSec,
+          status:"not_ordered",certificate:"none",supplier:"",
+          order_date:null,delivery_date:null,actual_price:null,
+          notes:"",replacement:null,custom_made:false,
+          priority:tp==="equipment"?"high":"normal",priority_date:null,
+          needs_replacement:false,replacement_note:"",
+          sort_order:items.length
+        });
+        lastIdx=items.length-1;
+      }
+    }
+    if(cv&&String(cv).indexOf("Всего по позиции")>=0&&lastIdx>=0){
+      items[lastIdx].total_base=typeof lv==="number"?lv:parseFloat(String(lv||0).replace(",","."))||0;
+      items[lastIdx].total=typeof nv==="number"?nv:parseFloat(String(nv||0).replace(",","."))||0;
+    }
+  }
+  return {items:items,name:oName||eName,objectName:oName};
+}
+
+
+// ═══════════════════════════
+// ЭКРАН ВХОДА
+// ═══════════════════════════
+function AuthScreen(props) {
+  var _s2=useState(""),email=_s2[0],setEmail=_s2[1];
+  var _s3=useState(""),pass=_s3[0],setPass=_s3[1];
+  var _s6=useState(""),err=_s6[0],setErr=_s6[1];
+  var _s7=useState(false),loading=_s7[0],setLoading=_s7[1];
+
+  function doLogin() {
+    if(!email||!pass){setErr("Заполните email и пароль");return}
+    setLoading(true); setErr("");
+    sb.auth.signInWithPassword({email:email,password:pass}).then(function(res){
+      setLoading(false);
+      if(res.error){setErr("Неверный email или пароль");return}
+      props.onAuth(res.data);
+    });
+  }
+
+  return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"linear-gradient(135deg,#1e3a5f,#2563eb 50%,#7c3aed)"}}>
+      <div style={Object.assign({},cardS,{width:"420px",textAlign:"center",padding:"32px"})}>
+        <div style={{fontSize:"40px",marginBottom:"4px"}}>{"📋"}</div>
+        <h2 style={{margin:"0 0 4px",fontSize:"22px"}}>Трекер закупок</h2>
+        <p style={{color:C.tm,margin:"0 0 24px",fontSize:"14px"}}>Вход в систему</p>
+
+        <div style={{textAlign:"left",marginBottom:"16px"}}>
+          <label style={lblS}>Email</label>
+          <input type="email" value={email} onChange={function(e){setEmail(e.target.value)}} placeholder="email@example.com" style={inputS} />
+        </div>
+        <div style={{textAlign:"left",marginBottom:"16px"}}>
+          <label style={lblS}>Пароль</label>
+          <input type="password" value={pass} onChange={function(e){setPass(e.target.value)}} placeholder="Пароль" onKeyDown={function(e){if(e.key==="Enter")doLogin()}} style={inputS} />
+        </div>
+
+        {err ? <p style={{color:C.d,fontSize:"13px",margin:"0 0 12px",fontWeight:600}}>{err}</p> : null}
+
+        <button type="button" onClick={doLogin} disabled={loading} style={Object.assign({},btnP,{width:"100%",opacity:loading?0.6:1})}>
+          {loading ? <span className="spinner" style={{marginRight:"8px"}} /> : null}
+          Войти
+        </button>
+
+        <p style={{marginTop:"16px",fontSize:"12px",color:C.tm}}>Доступ по приглашению</p>
+      </div>
+    </div>
+  );
+}
+
+
+// ═══════════════════════════
+// МОДУЛЬ 1: ЗАГРУЗКА
+// ═══════════════════════════
+function UploadModule(props) {
+  var _s1=useState(null),autoR=_s1[0],setAutoR=_s1[1];
+  var _s2=useState(false),importing=_s2[0],setImporting=_s2[1];
+  var fileRef=useRef(null);
+  function handleFile(e) {
+    var file=e.target.files[0]; if(!file) return;
+    var reader=new FileReader();
+    reader.onload=function(evt){
+      var wb=XLSX.read(evt.target.result,{type:"array"});
+      var res=parseLSR(wb,wb.SheetNames[0]);
+      if(res.items.length>0) setAutoR(res); else alert("Не удалось распознать формат");
+    };
+    reader.readAsArrayBuffer(file);
+  }
+  function doImport() {
+    if(!autoR) return;
+    setImporting(true);
+    props.onImport(autoR.items, autoR.name).then(function(){setImporting(false);setAutoR(null)});
+  }
+  return (
+    <div>
+      {props.itemCount>0 ? <div style={Object.assign({},cardS,{marginBottom:"16px",background:"#f0fdf4",borderColor:"#bbf7d0"})}>
+        <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
+          <span style={{fontSize:"22px"}}>{"✅"}</span>
+          <div><div style={{fontWeight:700}}>Загружено: {props.itemCount} позиций</div></div>
+        </div>
+      </div> : null}
+      <div style={cardS}>
+        <h3 style={{margin:"0 0 4px"}}>{"📥"} Загрузка сметы из Excel</h3>
+        <p style={{margin:"0 0 16px",fontSize:"13px",color:C.tm}}>ЛСР ГРАНД-Смета (Методика 2020)</p>
+        <div onClick={function(){if(fileRef.current)fileRef.current.click()}} style={{border:"2px dashed "+C.brd,borderRadius:C.r,padding:"40px 20px",textAlign:"center",cursor:"pointer"}}>
+          <div style={{fontSize:"40px",marginBottom:"8px"}}>{"📄"}</div>
+          <p style={{fontWeight:600}}>Нажмите для выбора файла</p>
+          <p style={{color:C.tm,fontSize:"13px"}}>.xlsx, .xls</p>
+          <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={handleFile} style={{display:"none"}} />
+        </div>
+      </div>
+      {autoR ? <div style={Object.assign({},cardS,{marginTop:"12px"})}>
+        <h3 style={{margin:"0 0 8px",fontSize:"15px"}}>{"🎯"} Распознано: {autoR.items.length} позиций</h3>
+        {autoR.objectName ? <p style={{margin:"0 0 12px",fontSize:"14px",color:C.ts}}><strong>Объект:</strong> {autoR.objectName}</p> : null}
+        <div style={{display:"flex",gap:"8px"}}>
+          <button type="button" onClick={doImport} disabled={importing} style={Object.assign({},btnP,{opacity:importing?0.6:1})}>
+            {importing?"Импорт...":"Импортировать "+autoR.items.length+" позиций"}
+          </button>
+          <button type="button" onClick={function(){setAutoR(null)}} style={{padding:"10px 20px",background:"#f1f5f9",color:C.txt,border:"none",borderRadius:C.rs,fontSize:"14px",fontWeight:600}}>Отмена</button>
+        </div>
+      </div> : null}
+    </div>
+  );
+}
+
+
+// ═══════════════════════════
+// МОДУЛЬ 2: ТРЕКЕР
+// ═══════════════════════════
+function TrackerModule(props) {
+  var _s1=useState("all"),statusFilter=_s1[0],setStatusFilter=_s1[1];
+  var _s2=useState("all"),typeFilter=_s2[0],setTypeFilter=_s2[1];
+  var _s3=useState(""),search=_s3[0],setSearch=_s3[1];
+  var _s4=useState(null),editingId=_s4[0],setEditingId=_s4[1];
+  var _s5f=useState("all"),workFilter=_s5f[0],setWorkFilter=_s5f[1];
+
+  var role=props.role, canEdit=ROLE_CONFIG[role].canEdit;
+  var isOwner = role === "owner";
+  var isForeman = role === "foreman";
+  var showPrices = !isForeman;
+  var comments=props.comments||{};
+
+  // Прораб видит только работы и перевозки
+  var all = isForeman ? props.items.filter(function(i){return i.type==="work"||i.type==="transport"}) : props.items;
+
+  function clickStatus(key) { setStatusFilter(key); }
+
+  // Фильтрация
+  var filtered = all;
+  if(typeFilter!=="all") filtered=filtered.filter(function(i){return i.type===typeFilter});
+  if(isForeman) {
+    // Прораб фильтрует по статусу работ
+    if(workFilter!=="all") filtered=filtered.filter(function(i){return(i.work_status||"not_started")===workFilter});
+  } else {
+    if(statusFilter==="not_ordered"||statusFilter==="ordered"||statusFilter==="in_transit"||statusFilter==="delivered"||statusFilter==="installed")
+      filtered=filtered.filter(function(i){return i.status===statusFilter});
+    else if(statusFilter==="no_cert") filtered=filtered.filter(function(i){return i.certificate==="none"&&i.status!=="not_ordered"});
+    else if(statusFilter==="custom") filtered=filtered.filter(function(i){return i.custom_made});
+    else if(statusFilter==="urgent") filtered=filtered.filter(function(i){
+      var d=daysLeft(i.priority_date); return(d!==null&&d<=14&&i.status==="not_ordered")||(i.custom_made&&i.status==="not_ordered");
+    });
+    else if(statusFilter==="replacement") filtered=filtered.filter(function(i){return i.needs_replacement});
+  }
+  if(search){var s=search.toLowerCase();filtered=filtered.filter(function(i){return(i.name&&i.name.toLowerCase().indexOf(s)>=0)||(i.code&&i.code.toLowerCase().indexOf(s)>=0)||(i.supplier&&i.supplier.toLowerCase().indexOf(s)>=0)})}
+  filtered=sortItems(filtered);
+
+  function doUpdate(id, updates) {
+    if(updates.status) setStatusFilter("all");
+    props.onUpdateItem(id, updates);
+  }
+
+  if(!all.length) return <div style={Object.assign({},cardS,{textAlign:"center",padding:"60px"})}><p style={{color:C.tm,fontSize:"16px"}}>{isForeman?"Нет работ в этой смете":"Загрузите смету на вкладке «Загрузка»"}</p></div>;
+
+  var replCount = all.filter(function(i){return i.needs_replacement}).length;
+
+  // Кнопки фильтров — разные для прораба и остальных
+  var typeButtons=[{key:"all",label:"Все типы",color:C.p,count:all.length}];
+  if(isForeman){
+    [{key:"work",label:"Работа",color:"#6366f1"},{key:"transport",label:"Перевозка",color:"#78716c"}].forEach(function(t){
+      var cnt=all.filter(function(i){return i.type===t.key}).length;
+      if(cnt>0)typeButtons.push({key:t.key,label:t.label,color:t.color,count:cnt});
+    });
+  } else {
+    TYPES.forEach(function(t){var cnt=all.filter(function(i){return i.type===t.key}).length;if(cnt>0)typeButtons.push({key:t.key,label:t.label,color:t.color,count:cnt})});
+  }
+
+  return (
+    <div>
+      {isForeman ? <div>
+        <div style={{display:"flex",gap:"5px",flexWrap:"wrap",marginBottom:"6px"}}>
+          {WORK_STATUSES.map(function(ws){
+            var cnt=all.filter(function(i){return(i.work_status||"not_started")===ws.key}).length;
+            var ac=workFilter===ws.key;
+            return <button type="button" key={ws.key} onClick={function(){setWorkFilter(ac?"all":ws.key)}} style={{padding:"5px 12px",borderRadius:"20px",fontSize:"12px",fontWeight:600,border:ac?"2px solid "+ws.color:"1px solid "+C.brd,background:ac?ws.color+"18":"#fff",color:ac?ws.color:C.tm}}>{ws.icon} {ws.label} ({cnt})</button>;
+          })}
+          <button type="button" onClick={function(){setWorkFilter("all")}} style={{padding:"5px 12px",borderRadius:"20px",fontSize:"12px",fontWeight:600,border:workFilter==="all"?"2px solid #64748b":"1px solid "+C.brd,background:workFilter==="all"?"#64748b18":"#fff",color:workFilter==="all"?"#64748b":C.tm}}>Все ({all.length})</button>
+        </div>
+      </div> : <div>
+        <div style={{display:"flex",gap:"5px",flexWrap:"wrap",marginBottom:"6px"}}>
+          {[{key:"all",label:"Все",count:all.length,color:"#64748b"}].concat(STATUSES.map(function(s){return{key:s.key,label:s.label,count:all.filter(function(i){return i.status===s.key}).length,color:s.color,icon:s.icon}})).map(function(f){var ac=statusFilter===f.key;return <button type="button" key={f.key} onClick={clickStatus.bind(null,f.key)} style={{padding:"5px 12px",borderRadius:"20px",fontSize:"12px",fontWeight:600,border:ac?"2px solid "+f.color:"1px solid "+C.brd,background:ac?f.color+"18":"#fff",color:ac?f.color:C.tm}}>{f.icon?f.icon+" ":""}{f.label} ({f.count})</button>})}
+        </div>
+        <div style={{display:"flex",gap:"5px",flexWrap:"wrap",marginBottom:"6px"}}>
+          {[
+            {key:"no_cert",label:"Без серт.",count:all.filter(function(i){return i.certificate==="none"&&i.status!=="not_ordered"}).length},
+            {key:"custom",label:"Под заказ",count:all.filter(function(i){return i.custom_made}).length},
+            {key:"urgent",label:"Горящие",count:all.filter(function(i){var d=daysLeft(i.priority_date);return(d!==null&&d<=14&&i.status==="not_ordered")||(i.custom_made&&i.status==="not_ordered")}).length},
+            {key:"replacement",label:"Нужна замена",count:replCount,color:"#ea580c"},
+          ].map(function(f){var ac=statusFilter===f.key;var col=f.color||"#f59e0b";return <button type="button" key={f.key} onClick={clickStatus.bind(null,ac?"all":f.key)} style={{padding:"5px 12px",borderRadius:"20px",fontSize:"12px",fontWeight:600,border:ac?"2px solid "+col:"1px solid "+C.brd,background:ac?col+"18":"#fff",color:ac?col:C.tm}}>{f.label} ({f.count})</button>})}
+        </div>
+      </div>}
+      <div style={{display:"flex",gap:"5px",flexWrap:"wrap",marginBottom:"10px"}} onClick={function(e){var btn=e.target.closest?e.target.closest("[data-tkey]"):null;if(!btn)return;var k=btn.getAttribute("data-tkey");if(k)setTypeFilter(k)}}>
+        {typeButtons.map(function(t){
+          var ac=typeFilter===t.key;
+          return <button type="button" key={t.key} data-tkey={t.key}
+            style={{padding:"5px 12px",borderRadius:"20px",fontSize:"12px",fontWeight:600,
+              border:ac?"2px solid "+t.color:"1px solid "+C.brd,
+              background:ac?t.color:"#fff",
+              color:ac?"#fff":t.color,
+              cursor:"pointer"}}>{t.label} ({t.count})</button>;
+        })}
+      </div>
+      <input placeholder="Поиск по названию, коду, поставщику..." value={search} onChange={function(e){setSearch(e.target.value)}} style={Object.assign({},inputS,{marginBottom:"12px"})} />
+      <div style={{fontSize:"13px",color:C.tm,marginBottom:"8px"}}>Показано: {filtered.length} из {all.length}</div>
+      <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+        {filtered.map(function(item){
+          var st=STATUSES.find(function(s){return s.key===item.status});
+          var ti=typeInfo(item.type);
+          var dl=daysLeft(item.delivery_date);
+          var dlP=daysLeft(item.priority_date);
+          var isUrgent=(dlP!==null&&dlP<=14&&item.status==="not_ordered")||(item.custom_made&&item.status==="not_ordered");
+          var isRepl=item.needs_replacement;
+          var isEd=editingId===item.id;
+          var itemComments=comments[item.id]||[];
+          var qty=item.quantity_total||item.quantity||0;
+          var unitPrice=qty>0&&item.total?(item.total/qty):null;
+          var actUnitPrice=item.actual_price||null;
+          var isOverprice=actUnitPrice!==null&&unitPrice!==null&&actUnitPrice>unitPrice;
+          var overpriceDiff=isOverprice?(actUnitPrice-unitPrice)*qty:0;
+          var ws=WORK_STATUSES.find(function(w){return w.key===(item.work_status||"not_started")})||WORK_STATUSES[0];
+          var bgColor=isForeman?ws.bg:isOverprice?"#fef2f2":isRepl?"#fff7ed":isUrgent?"#fef2f2":item.custom_made?"#fffbeb":"#fff";
+          var borderColor=isForeman?ws.color:isOverprice?C.d:isRepl?"#ea580c":st.color;
+          return (
+            <div key={item.id} style={Object.assign({},cardS,{borderLeft:"4px solid "+borderColor,padding:"12px 16px",background:bgColor})}>
+              <div style={{display:"flex",alignItems:"flex-start",gap:"10px"}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap"}}>
+                    {item.num?<span style={{fontSize:"12px",color:C.tm,fontWeight:700}}>#{item.num}</span>:null}
+                    <span style={{fontWeight:600}}>{item.name}</span>
+                  </div>
+                  <div style={{display:"flex",gap:"6px",flexWrap:"wrap",marginTop:"4px"}}>
+                    <span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:ti.color,background:ti.color+"15"}}>{ti.label}</span>
+                    {isForeman?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:ws.color,background:ws.bg}}>{ws.icon} {ws.label}</span>
+                    :<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:st.color,background:st.bg}}>{st.icon} {st.label}</span>}
+                    {!isForeman&&item.custom_made?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:"#92400e",background:"#fef3c7"}}>Под заказ</span>:null}
+                    {!isForeman&&isRepl?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:700,color:"#9a3412",background:"#fed7aa"}}>{"⚠"} Нужна замена</span>:null}
+                    {!isForeman&&isUrgent?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:"#991b1b",background:"#fee2e2"}}>{dlP!=null?(dlP<=0?"СРОЧНО! Заказать!":"Заказать за "+dlP+" дн."):"Под заказ — не заказано!"}</span>:null}
+                    {!isForeman&&dlP!==null&&item.priority==="high"?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:dlP<=3?"#991b1b":"#92400e",background:dlP<=3?"#fee2e2":"#fef3c7"}}>{"🔥"} Заказать до: {item.priority_date?item.priority_date.split("-").reverse().join("."):""}  {dlP<=0?" СРОЧНО!":""}</span>:null}
+                    {!isForeman&&isOverprice&&showPrices?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:700,color:"#991b1b",background:"#fee2e2"}}>{"📈"} +{fmt(overpriceDiff)} ₽</span>:null}
+                    {isForeman&&item.work_due_date?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:daysLeft(item.work_due_date)!==null&&daysLeft(item.work_due_date)<=3?"#991b1b":"#92400e",background:daysLeft(item.work_due_date)!==null&&daysLeft(item.work_due_date)<=3?"#fee2e2":"#fef3c7"}}>{"📅"} Срок: {item.work_due_date.split("-").reverse().join(".")}</span>:null}
+                    {isForeman&&item.work_start_date?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:"#475569",background:"#f1f5f9"}}>{"🗓"} Начало: {item.work_start_date.split("-").reverse().join(".")}</span>:null}
+                  </div>
+                  <div style={{fontSize:"12px",color:C.tm,marginTop:"4px"}}>
+                    {item.code?<span>{item.code} {"·"} </span>:null}
+                    {item.unit?<span>{qty} {item.unit}</span>:null}
+                    {showPrices?<span> {"·"} <span style={{fontWeight:600}}>{fmt(item.total)} ₽</span></span>:null}
+                    {showPrices&&unitPrice!==null?<span> {"·"} <span style={{color:C.p,fontWeight:600}}>{fmt(unitPrice)} ₽/{item.unit||"шт"}</span></span>:null}
+                    {showPrices&&actUnitPrice!==null?<span> {"·"} факт: <span style={{fontWeight:700,color:isOverprice?C.d:C.s}}>{fmt(actUnitPrice)} ₽/{item.unit||"шт"}</span></span>:null}
+                    {!isForeman&&item.supplier?<span> {"·"} {item.supplier}</span>:null}
+                  </div>
+                  {!isForeman&&isRepl&&item.replacement_note?<div style={{fontSize:"12px",color:"#9a3412",marginTop:"4px",fontStyle:"italic"}}>{"💬"} {item.replacement_note}</div>:null}
+                </div>
+                <button type="button" onClick={function(){setEditingId(isEd?null:item.id)}} style={{background:"transparent",border:"none",fontSize:"18px",color:C.p,padding:"4px 8px"}}>{isEd?"✕":canEdit?"✎":"💬"}</button>
+              </div>
+
+              {isEd&&canEdit&&isForeman ? <div style={{marginTop:"12px",paddingTop:"12px",borderTop:"1px solid "+C.brd}}>
+                <div style={{marginBottom:"12px"}}><label style={lblS}>Статус работы</label>
+                  <div style={{display:"flex",gap:"4px",flexWrap:"wrap"}}>
+                    {WORK_STATUSES.map(function(w2){var ac=(item.work_status||"not_started")===w2.key;return <button type="button" key={w2.key} onClick={doUpdate.bind(null,item.id,{work_status:w2.key})} style={{padding:"5px 12px",borderRadius:"16px",border:ac?"2px solid "+w2.color:"1px solid "+C.brd,background:ac?w2.bg:"#fff",color:ac?w2.color:C.tm,fontSize:"12px",fontWeight:ac?700:500}}>{w2.icon} {w2.label}</button>})}
+                  </div>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"12px"}}>
+                  <div><label style={lblS}>{"🗓"} Дата начала работ</label><DatePicker value={item.work_start_date||""} onChange={function(v){doUpdate(item.id,{work_start_date:v||null})}} /></div>
+                  <div><label style={lblS}>{"📅"} Срок завершения</label><DatePicker value={item.work_due_date||""} onChange={function(v){doUpdate(item.id,{work_due_date:v||null})}} /></div>
+                </div>
+                <div><label style={lblS}>Заметки</label><textarea defaultValue={item.notes||""} onBlur={function(e){doUpdate(item.id,{notes:e.target.value})}} rows={2} style={Object.assign({},inputS,{resize:"vertical"})} /></div>
+              </div> : null}
+
+              {isEd&&canEdit&&!isForeman ? <div style={{marginTop:"12px",paddingTop:"12px",borderTop:"1px solid "+C.brd}}>
+                <div style={{marginBottom:"12px"}}><label style={lblS}>Статус</label>
+                  <div style={{display:"flex",gap:"4px",flexWrap:"wrap"}}>
+                    {STATUSES.map(function(s){var ac=item.status===s.key;return <button type="button" key={s.key} onClick={doUpdate.bind(null,item.id,{status:s.key})} style={{padding:"5px 10px",borderRadius:"16px",border:ac?"2px solid "+s.color:"1px solid "+C.brd,background:ac?s.bg:"#fff",color:ac?s.color:C.tm,fontSize:"12px",fontWeight:ac?700:500}}>{s.icon} {s.label}</button>})}
+                  </div>
+                </div>
+                <div style={{marginBottom:"12px"}}><label style={lblS}>Сертификат</label>
+                  <div style={{display:"flex",gap:"4px",flexWrap:"wrap"}}>
+                    {CERTS.map(function(c2){var ac=item.certificate===c2.key;return <button type="button" key={c2.key} onClick={doUpdate.bind(null,item.id,{certificate:c2.key})} style={{padding:"5px 12px",borderRadius:"16px",border:ac?"2px solid "+c2.color:"1px solid "+C.brd,background:ac?c2.color+"18":"#fff",color:ac?c2.color:C.tm,fontSize:"12px",fontWeight:ac?700:500}}>{c2.label}</button>})}
+                  </div>
+                </div>
+                <div style={{marginBottom:"12px"}}><label style={lblS}>Приоритет</label>
+                  <div style={{display:"flex",gap:"4px",flexWrap:"wrap"}}>
+                    {[{key:"high",label:"Высокий",color:"#ef4444"},{key:"normal",label:"Обычный",color:"#6b7280"},{key:"low",label:"Низкий",color:"#22c55e"}].map(function(p){var ac=(item.priority||"normal")===p.key;return <button type="button" key={p.key} onClick={doUpdate.bind(null,item.id,{priority:p.key})} style={{padding:"5px 12px",borderRadius:"16px",border:ac?"2px solid "+p.color:"1px solid "+C.brd,background:ac?p.color+"18":"#fff",color:ac?p.color:C.tm,fontSize:"12px",fontWeight:ac?700:500}}>{p.label}</button>})}
+                  </div>
+                </div>
+                {(item.priority==="high") ? <div style={{marginBottom:"12px"}}>
+                  <label style={lblS}>{"🔥"} Заказать до (дата)</label>
+                  <DatePicker value={item.priority_date||""} onChange={function(v){doUpdate(item.id,{priority_date:v||null})}} />
+                </div> : null}
+                <div style={{marginBottom:"12px",display:"flex",gap:"8px",flexWrap:"wrap"}}>
+                  <button type="button" onClick={function(){doUpdate(item.id,{custom_made:!item.custom_made})}} style={{padding:"5px 12px",borderRadius:"16px",border:item.custom_made?"2px solid #f59e0b":"1px solid "+C.brd,background:item.custom_made?"#fffbeb":"#fff",color:item.custom_made?"#92400e":C.tm,fontSize:"12px",fontWeight:item.custom_made?700:500}}>{item.custom_made?"✔ Под заказ":"☐ Под заказ"}</button>
+                  <button type="button" onClick={function(){
+                    if(item.needs_replacement){doUpdate(item.id,{needs_replacement:false,replacement_note:""})}
+                    else{var note=prompt("Причина замены (необязательно):");doUpdate(item.id,{needs_replacement:true,replacement_note:note||""})}
+                  }} style={{padding:"5px 12px",borderRadius:"16px",border:item.needs_replacement?"2px solid #ea580c":"1px solid "+C.brd,background:item.needs_replacement?"#fff7ed":"#fff",color:item.needs_replacement?"#9a3412":C.tm,fontSize:"12px",fontWeight:item.needs_replacement?700:500}}>{item.needs_replacement?"⚠ Замена запрошена":"☐ Нужна замена"}</button>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:"10px"}}>
+                  <div><label style={lblS}>Поставщик</label><input defaultValue={item.supplier||""} onBlur={function(e){doUpdate(item.id,{supplier:e.target.value})}} style={inputS} /></div>
+                  {showPrices?<div><label style={lblS}>Факт. стоимость</label><input type="number" defaultValue={item.actual_price!=null?item.actual_price:""} onBlur={function(e){doUpdate(item.id,{actual_price:e.target.value?parseFloat(e.target.value):null})} } style={inputS} /></div>:null}
+                  <div><label style={lblS}>Дата заказа</label><DatePicker value={item.order_date||""} onChange={function(v){doUpdate(item.id,{order_date:v||null})}} /></div>
+                  <div><label style={lblS}>Дата поставки</label><DatePicker value={item.delivery_date||""} onChange={function(v){doUpdate(item.id,{delivery_date:v||null})}} /></div>
+                  <div style={{gridColumn:"1/-1"}}><label style={lblS}>Заметки</label><textarea defaultValue={item.notes||""} onBlur={function(e){doUpdate(item.id,{notes:e.target.value})}} rows={2} style={Object.assign({},inputS,{resize:"vertical"})} /></div>
+                </div>
+              </div> : null}
+
+              {isEd&&!canEdit&&isOwner ? <div style={{marginTop:"12px",paddingTop:"12px",borderTop:"1px solid "+(isRepl?"#fed7aa":C.brd),background:isRepl?"#fff7ed":"#f8fafc",margin:"-12px -16px -20px",padding:"16px",borderRadius:"0 0 11px 11px"}}>
+                {isRepl?<div><div style={{fontSize:"13px",fontWeight:700,color:"#9a3412",marginBottom:"8px"}}>{"⚠"} Менеджер запросил замену</div>
+                {item.replacement_note?<div style={{fontSize:"13px",color:"#9a3412",marginBottom:"8px",fontStyle:"italic"}}>Причина: {item.replacement_note}</div>:null}
+                <p style={{fontSize:"12px",color:C.ts,marginBottom:"8px"}}>Оставьте комментарий с решением.</p></div>:null}
+                {(item.type==="work"||item.type==="transport")?<div style={{marginTop:isRepl?"12px":"0"}}>
+                  <label style={lblS}>{"📅"} Срок завершения работы</label>
+                  <DatePicker value={item.work_due_date||""} onChange={function(v){props.onUpdateItem(item.id,{work_due_date:v||null})}} />
+                </div>:null}
+              </div> : null}
+
+              {isEd ? <div style={{marginTop:"10px",paddingTop:"10px",borderTop:"1px solid "+C.brd}}>
+                <label style={lblS}>{"💬"} Комментарии ({itemComments.length})</label>
+                {itemComments.map(function(c3){
+                  return <div key={c3.id} style={{padding:"6px 10px",marginBottom:"4px",background:"#f8fafc",borderRadius:C.rs,fontSize:"13px",border:"1px solid #f1f5f9"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",marginBottom:"2px"}}>
+                      <span style={{fontWeight:700,color:C.p,fontSize:"12px"}}>{c3.author_name} ({ROLE_CONFIG[c3.author_role]?ROLE_CONFIG[c3.author_role].label:c3.author_role})</span>
+                      <span style={{fontSize:"11px",color:C.tm}}>{c3.created_at?new Date(c3.created_at).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}):""}</span>
+                    </div>
+                    <div>{c3.text}</div>
+                  </div>;
+                })}
+                <div style={{display:"flex",gap:"6px",marginTop:"6px"}}>
+                  <input id={"cmt_"+item.id} placeholder="Написать комментарий..." style={Object.assign({},inputS,{flex:1})} onKeyDown={function(e){if(e.key==="Enter"&&e.target.value.trim()){props.onAddComment(item.id,e.target.value.trim());e.target.value=""}}} />
+                  <button type="button" onClick={function(){var inp=document.getElementById("cmt_"+item.id);if(inp&&inp.value.trim()){props.onAddComment(item.id,inp.value.trim());inp.value=""}}} style={{padding:"8px 16px",background:C.p,color:"#fff",border:"none",borderRadius:C.rs,fontSize:"13px",fontWeight:600}}>{"➤"}</button>
+                </div>
+              </div> : itemComments.length>0 ? <div style={{marginTop:"6px",fontSize:"12px",color:C.ts}}>{"💬"} {itemComments.length} комм.</div> : null}
+            </div>
+          );
+        })}
+      </div>
+      {filtered.length===0?<div style={Object.assign({},cardS,{textAlign:"center",padding:"40px"})}><p style={{color:C.tm}}>Ничего не найдено</p></div>:null}
+    </div>
+  );
+}
+
+
+// ═══════════════════════════
+// МОДУЛЬ 4: СВОДКА
+// ═══════════════════════════
+function SummaryModule(props) {
+  var items=props.items;
+  if(!items.length) return <div style={Object.assign({},cardS,{textAlign:"center",padding:"60px"})}><p style={{color:C.tm}}>Загрузите смету</p></div>;
+  var totalEst=0,totalAct=0;
+  items.forEach(function(i){totalEst+=(i.total||0)});
+  items.forEach(function(i){if(i.actual_price!=null) totalAct+=(i.actual_price||0)*(i.quantity_total||i.quantity)});
+  var closed=items.filter(function(i){return i.status==="delivered"||i.status==="installed"}).length;
+  var replItems=items.filter(function(i){return i.needs_replacement});
+  var customNO=items.filter(function(i){return i.custom_made&&i.status==="not_ordered"});
+  var urgent=items.filter(function(i){var d=daysLeft(i.priority_date);return(d!==null&&d<=14&&i.status==="not_ordered")||(i.custom_made&&i.status==="not_ordered")});
+  var byStatus=STATUSES.map(function(s){var si=items.filter(function(i){return i.status===s.key});var sum=0;si.forEach(function(i){sum+=(i.total||0)});return{label:s.label,color:s.color,count:si.length,sum:sum}});
+  var byType=TYPES.map(function(t){var ti2=items.filter(function(i){return i.type===t.key});var sum=0;ti2.forEach(function(i){sum+=(i.total||0)});return{label:t.label,color:t.color,count:ti2.length,sum:sum}}).filter(function(t){return t.count>0});
+  return (
+    <div>
+      <div style={{display:"flex",gap:"10px",marginBottom:"16px",flexWrap:"wrap"}}>
+        <div style={Object.assign({},cardS,{textAlign:"center",flex:1,minWidth:"140px"})}><div style={{fontSize:"26px",fontWeight:800,color:C.s}}>{closed}/{items.length}</div><div style={{fontSize:"12px",color:C.tm}}>Закрыто ({pct(closed,items.length)}%)</div><div style={{height:"6px",borderRadius:"3px",background:"#e2e8f0",marginTop:"6px",overflow:"hidden"}}><div style={{height:"100%",width:pct(closed,items.length)+"%",background:C.s,borderRadius:"3px"}}/></div></div>
+        <div style={Object.assign({},cardS,{textAlign:"center",flex:1,minWidth:"140px"})}><div style={{fontSize:"26px",fontWeight:800}}>{fmtS(totalEst)}</div><div style={{fontSize:"12px",color:C.tm}}>Смета, ₽</div></div>
+        <div style={Object.assign({},cardS,{textAlign:"center",flex:1,minWidth:"140px"})}><div style={{fontSize:"26px",fontWeight:800,color:totalAct>totalEst?C.d:C.s}}>{totalAct>0?fmtS(totalAct):"—"}</div><div style={{fontSize:"12px",color:C.tm}}>Факт, ₽</div></div>
+        <div style={Object.assign({},cardS,{textAlign:"center",flex:1,minWidth:"140px",background:(urgent.length+customNO.length+replItems.length)>0?"#fef2f2":"#fff"})}><div style={{fontSize:"26px",fontWeight:800,color:(urgent.length+customNO.length+replItems.length)>0?C.d:C.s}}>{urgent.length+customNO.length+replItems.length}</div><div style={{fontSize:"12px",color:C.tm}}>Внимание</div></div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px",marginBottom:"12px"}}>
+        <div style={cardS}><h3 style={{margin:"0 0 12px",fontSize:"15px"}}>По статусам</h3>{byStatus.map(function(s,i){return <div key={i} style={{display:"flex",alignItems:"center",gap:"10px",padding:"6px 0",borderBottom:"1px solid "+C.brd}}><div style={{width:"8px",height:"8px",borderRadius:"50%",background:s.color}}/><div style={{flex:1,fontSize:"14px"}}>{s.label}</div><div style={{fontWeight:700}}>{s.count}</div><div style={{color:C.tm,fontSize:"12px",minWidth:"80px",textAlign:"right"}}>{fmtS(s.sum)} ₽</div></div>})}</div>
+        <div style={cardS}><h3 style={{margin:"0 0 12px",fontSize:"15px"}}>По типам</h3>{byType.map(function(t,i){return <div key={i} style={{display:"flex",alignItems:"center",gap:"10px",padding:"6px 0",borderBottom:"1px solid "+C.brd}}><div style={{width:"8px",height:"8px",borderRadius:"50%",background:t.color}}/><div style={{flex:1,fontSize:"14px"}}>{t.label}</div><div style={{fontWeight:700}}>{t.count}</div><div style={{color:C.tm,fontSize:"12px",minWidth:"80px",textAlign:"right"}}>{fmtS(t.sum)} ₽</div></div>})}</div>
+      </div>
+      {(urgent.length>0||customNO.length>0||replItems.length>0)?<div style={Object.assign({},cardS,{background:"#fef2f2",borderColor:"#fecaca"})}>
+        <h3 style={{margin:"0 0 12px",fontSize:"15px",color:C.d}}>Требуют внимания</h3>
+        {replItems.length>0?<div style={{marginBottom:"8px"}}><div style={{fontSize:"13px",fontWeight:700,color:"#9a3412",marginBottom:"4px"}}>{"⚠"} Ожидают замены ({replItems.length}):</div>{replItems.map(function(i){return <div key={i.id} style={{padding:"3px 0",fontSize:"13px"}}>#{i.num} {i.name}{i.replacement_note?" — "+i.replacement_note:""}</div>})}</div>:null}
+        {customNO.length>0?<div style={{marginBottom:"8px"}}><div style={{fontSize:"13px",fontWeight:700,color:"#92400e",marginBottom:"4px"}}>Под заказ — не заказано ({customNO.length}):</div>{customNO.map(function(i){return <div key={i.id} style={{padding:"3px 0",fontSize:"13px"}}>#{i.num} {i.name} — <span style={{color:C.d}}>{fmt(i.total)} ₽</span></div>})}</div>:null}
+        {urgent.length>0?<div><div style={{fontSize:"13px",fontWeight:700,color:C.d,marginBottom:"4px"}}>Горящие — заказать в ближайшие 14 дней ({urgent.length}):</div>{urgent.map(function(i){var d=daysLeft(i.priority_date);return <div key={i.id} style={{padding:"3px 0",fontSize:"13px"}}>#{i.num} {i.name} — {d!==null?(d<=0?<span style={{color:C.d,fontWeight:700}}>СРОЧНО!</span>:d+" дн."):i.custom_made?"под заказ, не заказано":""}</div>})}</div>:null}
+      </div>:null}
+    </div>
+  );
+}
+
+
+// ═══════════════════════════
+// ГЛАВНОЕ ПРИЛОЖЕНИЕ
+// ═══════════════════════════
+function App() {
+  var _s1=useState(null),user=_s1[0],setUser=_s1[1];
+  var _s2=useState(null),profile=_s2[0],setProfile=_s2[1];
+  var _s3=useState(true),loading=_s3[0],setLoading=_s3[1];
+  // Проекты
+  var _s4=useState([]),projects=_s4[0],setProjects=_s4[1];
+  var _s5=useState(null),activeProjectId=_s5[0],setActiveProjectId=_s5[1];
+  var _s6=useState(false),showNewProject=_s6[0],setShowNewProject=_s6[1];
+  var _s7=useState(""),newProjectName=_s7[0],setNewProjectName=_s7[1];
+  // Сметы
+  var _s8=useState([]),estimates=_s8[0],setEstimates=_s8[1];
+  var _s9=useState(null),activeEstId=_s9[0],setActiveEstId=_s9[1];
+  var _s10=useState(false),showNewEst=_s10[0],setShowNewEst=_s10[1];
+  var _s11=useState(""),newEstName=_s11[0],setNewEstName=_s11[1];
+  // Позиции и вкладки
+  var _s12=useState("tracker"),activeTab=_s12[0],setActiveTab=_s12[1];
+  var _s13=useState([]),items=_s13[0],setItems=_s13[1];
+  var _s14=useState({}),comments=_s14[0],setComments=_s14[1];
+  var _s15=useState(""),syncMsg=_s15[0],setSyncMsg=_s15[1];
+
+  var activeProject = projects.find(function(p){return p.id===activeProjectId}) || null;
+  var projectEstimates = estimates.filter(function(e){return e.project_id===activeProjectId});
+  var est = projectEstimates.find(function(e){return e.id===activeEstId}) || null;
+  var role = profile ? profile.role : "owner";
+  var rc = ROLE_CONFIG[role];
+
+  // ─── Проверка сессии ───
+  useEffect(function() {
+    sb.auth.getSession().then(function(res) {
+      if (res.data.session) {
+        setUser(res.data.session.user);
+        loadProfile(res.data.session.user.id);
+      } else { setLoading(false); }
+    });
+    var sub = sb.auth.onAuthStateChange(function(event, session) {
+      if (event === "SIGNED_OUT") { setUser(null); setProfile(null); setProjects([]); setEstimates([]); setItems([]); }
+    });
+    return function() { sub.data.subscription.unsubscribe(); };
+  }, []);
+
+  function loadProfile(uid) {
+    sb.from("profiles").select("*").eq("id", uid).single().then(function(res) {
+      if (res.data) { setProfile(res.data); loadProjects(); }
+      else { setLoading(false); }
+    });
+  }
+
+  function loadProjects() {
+    sb.from("projects").select("*").order("created_at").then(function(res) {
+      var pr = res.data || [];
+      setProjects(pr);
+      // Загрузить все сметы
+      sb.from("estimates").select("*").order("created_at").then(function(res2) {
+        setEstimates(res2.data || []);
+        setLoading(false);
+        // Авто-выбор первого проекта
+        if (pr.length > 0 && !activeProjectId) {
+          setActiveProjectId(pr[0].id);
+          var firstEst = (res2.data || []).filter(function(e){return e.project_id===pr[0].id});
+          if (firstEst.length > 0) setActiveEstId(firstEst[0].id);
+        }
+      });
+    });
+  }
+
+  // ─── Загрузка позиций при смене сметы ───
+  useEffect(function() {
+    if (!est) { setItems([]); setComments({}); return; }
+    sb.from("items").select("*").eq("estimate_id", est.id).order("sort_order").then(function(res) {
+      setItems(res.data || []);
+      var ids = (res.data || []).map(function(i) { return i.id; });
+      if (ids.length > 0) {
+        sb.from("comments").select("*").in("item_id", ids).order("created_at").then(function(cr) {
+          var grouped = {};
+          (cr.data || []).forEach(function(c) {
+            if (!grouped[c.item_id]) grouped[c.item_id] = [];
+            grouped[c.item_id].push(c);
+          });
+          setComments(grouped);
+        });
+      }
+    });
+  }, [est ? est.id : null]);
+
+  // ─── Realtime ───
+  useEffect(function() {
+    if (!est) return;
+    var channel = sb.channel("tracker-" + est.id)
+      .on("postgres_changes", {event:"*",schema:"public",table:"items",filter:"estimate_id=eq."+est.id}, function(payload) {
+        if (payload.eventType === "INSERT") { setItems(function(prev) { return prev.concat([payload.new]); }); }
+        else if (payload.eventType === "UPDATE") { setItems(function(prev) { return prev.map(function(i) { return i.id === payload.new.id ? payload.new : i; }); }); }
+        else if (payload.eventType === "DELETE") { setItems(function(prev) { return prev.filter(function(i) { return i.id !== payload.old.id; }); }); }
+      })
+      .on("postgres_changes", {event:"INSERT",schema:"public",table:"comments"}, function(payload) {
+        var c = payload.new;
+        setComments(function(prev) {
+          var copy = Object.assign({}, prev);
+          if (!copy[c.item_id]) copy[c.item_id] = [];
+          copy[c.item_id] = copy[c.item_id].concat([c]);
+          return copy;
+        });
+      })
+      .subscribe();
+    return function() { sb.removeChannel(channel); };
+  }, [est ? est.id : null]);
+
+  // ─── Действия ───
+  function handleAuth(data) {
+    setUser(data.user);
+    loadProfile(data.user.id);
+  }
+
+  function createProject() {
+    if (!newProjectName.trim()) return;
+    sb.from("projects").insert({name: newProjectName.trim(), created_by: user.id}).select().then(function(res) {
+      if (res.data && res.data[0]) {
+        setProjects(function(prev) { return prev.concat(res.data); });
+        setActiveProjectId(res.data[0].id);
+        setActiveEstId(null);
+      }
+    });
+    setNewProjectName(""); setShowNewProject(false);
+  }
+
+  function deleteProject(pid) {
+    var pr = projects.find(function(p){return p.id===pid});
+    if (!pr || !confirm("Удалить проект «" + pr.name + "» со всеми сметами и позициями?")) return;
+    // Удалить сметы проекта (каскадно удалит позиции)
+    var estIds = estimates.filter(function(e){return e.project_id===pid}).map(function(e){return e.id});
+    if (estIds.length > 0) {
+      sb.from("estimates").delete().in("id", estIds);
+    }
+    sb.from("projects").delete().eq("id", pid).then(function() {
+      setProjects(function(prev) { return prev.filter(function(p) { return p.id !== pid; }); });
+      setEstimates(function(prev) { return prev.filter(function(e) { return e.project_id !== pid; }); });
+      if (activeProjectId === pid) {
+        setActiveProjectId(projects.length > 1 ? projects.find(function(p){return p.id!==pid}).id : null);
+        setActiveEstId(null);
+        setItems([]);
+      }
+    });
+  }
+
+  function createEstimate() {
+    if (!newEstName.trim() || !activeProjectId) return;
+    sb.from("estimates").insert({name: newEstName.trim(), created_by: user.id, project_id: activeProjectId}).select().then(function(res) {
+      if (res.data && res.data[0]) {
+        setEstimates(function(prev) { return prev.concat(res.data); });
+        setActiveEstId(res.data[0].id);
+        setActiveTab("upload");
+      }
+    });
+    setNewEstName(""); setShowNewEst(false);
+  }
+
+  function deleteEstimate(eid) {
+    var e = estimates.find(function(x){return x.id===eid});
+    if (!e || !confirm("Удалить «" + e.name + "» и все позиции?")) return;
+    sb.from("estimates").delete().eq("id", eid).then(function() {
+      setEstimates(function(prev) { return prev.filter(function(x) { return x.id !== eid; }); });
+      if (activeEstId === eid) {
+        var remaining = projectEstimates.filter(function(x){return x.id!==eid});
+        setActiveEstId(remaining.length > 0 ? remaining[0].id : null);
+        setItems([]);
+      }
+    });
+  }
+
+  function handleImport(parsedItems, name) {
+    if (!est) return Promise.resolve();
+    if (name) sb.from("estimates").update({name: name}).eq("id", est.id).then(function() {
+      setEstimates(function(prev) { return prev.map(function(e) { return e.id === est.id ? Object.assign({}, e, {name: name}) : e; }); });
+    });
+    var rows = parsedItems.map(function(item, idx) {
+      return Object.assign({}, item, {estimate_id: est.id, sort_order: items.length + idx});
+    });
+    return sb.from("items").insert(rows).select().then(function(res) {
+      if (res.data) { setItems(function(prev) { return prev.concat(res.data); }); setActiveTab("tracker"); }
+    });
+  }
+
+  function updateItem(id, updates) {
+    setItems(function(prev) { return prev.map(function(i) { return i.id === id ? Object.assign({}, i, updates) : i; }); });
+    sb.from("items").update(updates).eq("id", id).then(function(res) {
+      if (res.error) {
+        setSyncMsg("ОШИБКА: " + res.error.message);
+        setTimeout(function(){ setSyncMsg(""); }, 8000);
+        // откатить оптимистичное обновление — перезагрузить данные
+        if (est) {
+          sb.from("items").select("*").eq("estimate_id", est.id).order("sort_order").then(function(r2) {
+            if (r2.data) setItems(r2.data);
+          });
+        }
+      }
+    });
+  }
+
+  function addComment(itemId, text) {
+    if (!profile) return;
+    var c = {item_id: itemId, author_id: user.id, author_name: profile.full_name, author_role: profile.role, text: text};
+    sb.from("comments").insert(c).select().then(function(res) {
+      if (res.data && res.data[0]) {
+        setComments(function(prev) {
+          var copy = Object.assign({}, prev);
+          if (!copy[itemId]) copy[itemId] = [];
+          copy[itemId] = copy[itemId].concat(res.data);
+          return copy;
+        });
+      }
+    });
+  }
+
+  function doLogout() { sb.auth.signOut(); }
+
+  // ─── Экспорт Excel ───
+  var _sExp1=useState(false),showExport=_sExp1[0],setShowExport=_sExp1[1];
+  var _sExp2=useState("all"),expType=_sExp2[0],setExpType=_sExp2[1];
+  var _sExp3=useState("all"),expStatus=_sExp3[0],setExpStatus=_sExp3[1];
+
+  function doExport() {
+    if (!est || !items.length) return;
+    var filtered = items;
+    if (expType !== "all") filtered = filtered.filter(function(i){return i.type===expType});
+    if (expStatus !== "all") filtered = filtered.filter(function(i){return i.status===expStatus});
+    if (!filtered.length) { alert("Нет позиций по выбранным фильтрам"); return; }
+
+    var d = new Date();
+    var dateStr = String(d.getDate()).padStart(2,"0")+"."+String(d.getMonth()+1).padStart(2,"0")+"."+d.getFullYear();
+    var typeName = expType==="all"?"Все типы":(TYPES.find(function(t){return t.key===expType})||{}).label||expType;
+    var statusName = expStatus==="all"?"Все статусы":(STATUSES.find(function(s){return s.key===expStatus})||{}).label||expStatus;
+
+    var title = (activeProject?activeProject.name+" / ":"")+est.name;
+    var isWorkOnly = expType==="work";
+    var headerCols, colWidths, mergeEnd;
+    if(isWorkOnly){
+      headerCols=["№ п/п","№ сметы","Наименование","Ед. изм.","Кол-во","Стоимость (смета), ₽","Цена за ед., ₽","Статус","Поставщик","Сертификат","Примечания"];
+      colWidths=[{wch:6},{wch:8},{wch:45},{wch:8},{wch:8},{wch:16},{wch:14},{wch:14},{wch:20},{wch:12},{wch:40}];
+      mergeEnd=10;
+    } else {
+      headerCols=["№ п/п","№ сметы","Обоснование","Наименование","Ед. изм.","Кол-во","Стоимость (смета), ₽","Цена за ед., ₽","Статус","Поставщик","Факт. цена за ед., ₽","Факт. стоимость, ₽","Разница, ₽","Сертификат","Примечания"];
+      colWidths=[{wch:6},{wch:8},{wch:22},{wch:45},{wch:8},{wch:8},{wch:16},{wch:14},{wch:14},{wch:20},{wch:14},{wch:16},{wch:14},{wch:12},{wch:40}];
+      mergeEnd=14;
+    }
+    var header = [
+      ["ВЕДОМОСТЬ: "+title],
+      ["Тип: "+typeName+" | Статус: "+statusName+" | Дата: "+dateStr],
+      [],
+      headerCols
+    ];
+    var rows = [];
+    var totalSmeta = 0, totalFact = 0;
+    filtered.forEach(function(item, idx) {
+      var st2=STATUSES.find(function(s){return s.key===item.status});
+      var cert=CERTS.find(function(c){return c.key===item.certificate});
+      var qty = item.quantity_total||item.quantity||0;
+      var up = qty>0&&item.total?(item.total/qty):null;
+      var factTotal = item.actual_price!=null?(item.actual_price*qty):null;
+      var diff = (factTotal!=null&&item.total!=null)?(factTotal-item.total):null;
+      totalSmeta += (item.total||0);
+      if (factTotal!=null) totalFact += factTotal;
+      var notes = [];
+      if (item.custom_made) notes.push("Под заказ");
+      if (item.needs_replacement) notes.push("ЗАМЕНА"+(item.replacement_note?" — "+item.replacement_note:""));
+      var cmts=(comments[item.id]||[]).map(function(c){return c.author_name+": "+c.text}).join("; ");
+      if (cmts) notes.push(cmts);
+      if(isWorkOnly){
+        rows.push([idx+1, item.num, item.name, item.unit, qty,
+          item.total, up, st2?st2.label:"", item.supplier||"",
+          cert?cert.label:"", notes.join("\n")]);
+      } else {
+        rows.push([idx+1, item.num, item.code, item.name, item.unit, qty,
+          item.total, up, st2?st2.label:"", item.supplier||"",
+          item.actual_price, factTotal, diff,
+          cert?cert.label:"", notes.join("\n")]);
+      }
+    });
+    rows.push([]);
+    if(isWorkOnly){
+      rows.push(["","","ИТОГО:","","",totalSmeta,"","","","",""]);
+    } else {
+      rows.push(["","","","ИТОГО:","","",totalSmeta,"","","","",totalFact>0?totalFact:null,totalFact>0?(totalFact-totalSmeta):null,"",""]);
+    }
+
+    var ws=XLSX.utils.aoa_to_sheet(header.concat(rows));
+    ws["!cols"]=colWidths;
+    ws["!merges"]=[{s:{r:0,c:0},e:{r:0,c:mergeEnd}},{s:{r:1,c:0},e:{r:1,c:mergeEnd}}];
+    var wb=XLSX.utils.book_new();
+    var sheetName = typeName.substring(0,28);
+    XLSX.utils.book_append_sheet(wb,ws,sheetName);
+    var fileName = "Ведомость_"+(activeProject?activeProject.name+"_":"")+(typeName!=="Все типы"?typeName+"_":"")+dateStr.replace(/\./g,"-")+".xlsx";
+    XLSX.writeFile(wb,fileName);
+    setShowExport(false);
+  }
+
+  // ─── Рендер ───
+  if (loading) return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#f8fafc"}}><div className="spinner" style={{width:"40px",height:"40px"}} /></div>;
+  if (!user) return <AuthScreen onAuth={handleAuth} />;
+  if (!profile) return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center"}}><div className="spinner" style={{width:"40px",height:"40px"}} /><p style={{marginLeft:"12px",color:C.tm}}>Загрузка профиля...</p></div>;
+
+  var tabs = [
+    {key:"upload",label:"Загрузка",icon:"📥"},
+    {key:"tracker",label:"Трекер",icon:"📦",count:items.length},
+    {key:"summary",label:"Сводка",icon:"📊"},
+  ];
+
+  // Подсчёт замен для значка у собственника
+  var replBadge = 0;
+  if (role === "owner") {
+    estimates.forEach(function(e2) {
+      // Для текущей сметы считаем из items, для остальных потом можно добавить
+      if (e2.id === (est ? est.id : null)) {
+        replBadge += items.filter(function(i){return i.needs_replacement}).length;
+      }
+    });
+  }
+
+  return (
+    <div style={{minHeight:"100vh",background:"#f8fafc",display:"flex"}}>
+      {/* ═══ БОКОВАЯ ПАНЕЛЬ — ПРОЕКТЫ ═══ */}
+      <div style={{width:"240px",minWidth:"240px",background:"#1e293b",color:"#fff",display:"flex",flexDirection:"column",position:"sticky",top:0,height:"100vh",overflowY:"auto"}}>
+        <div style={{padding:"16px",borderBottom:"1px solid #334155"}}>
+          <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"4px"}}>
+            <span style={{fontSize:"20px"}}>{"📋"}</span>
+            <span style={{fontWeight:700,fontSize:"15px"}}>Трекер закупок</span>
+          </div>
+          <div style={{fontSize:"12px",color:"#94a3b8"}}>{profile.full_name} ({rc.label})</div>
+        </div>
+
+        <div style={{padding:"12px",borderBottom:"1px solid #334155"}}>
+          <div style={{fontSize:"11px",fontWeight:700,color:"#64748b",textTransform:"uppercase",letterSpacing:"1px",marginBottom:"8px"}}>Проекты</div>
+          {projects.map(function(pr){
+            var isActive = pr.id === activeProjectId;
+            var prEstCount = estimates.filter(function(e){return e.project_id===pr.id}).length;
+            return <div key={pr.id} style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"2px"}}>
+              <button type="button" onClick={function(){
+                setActiveProjectId(pr.id);
+                var prEsts = estimates.filter(function(e){return e.project_id===pr.id});
+                setActiveEstId(prEsts.length > 0 ? prEsts[0].id : null);
+                setActiveTab("upload");
+              }} style={{flex:1,textAlign:"left",padding:"8px 10px",borderRadius:C.rs,border:"none",background:isActive?"#334155":"transparent",color:isActive?"#fff":"#cbd5e1",fontSize:"13px",fontWeight:isActive?700:500}}>
+                {"📁"} {pr.name} <span style={{color:"#64748b",fontSize:"11px"}}>({prEstCount})</span>
+              </button>
+              {rc.canCreate ? <button type="button" onClick={deleteProject.bind(null,pr.id)} style={{background:"transparent",border:"none",color:"#64748b",fontSize:"11px",padding:"4px"}}>{"✕"}</button> : null}
+            </div>;
+          })}
+          {rc.canCreate ? <button type="button" onClick={function(){setShowNewProject(true)}} style={{width:"100%",padding:"8px 10px",background:"transparent",border:"1px dashed #475569",borderRadius:C.rs,color:"#94a3b8",fontSize:"13px",marginTop:"6px",textAlign:"left"}}>+ Новый проект</button> : null}
+        </div>
+
+        {/* Сметы текущего проекта */}
+        {activeProject ? <div style={{padding:"12px",flex:1}}>
+          <div style={{fontSize:"11px",fontWeight:700,color:"#64748b",textTransform:"uppercase",letterSpacing:"1px",marginBottom:"8px"}}>Сметы ({activeProject.name})</div>
+          {projectEstimates.map(function(e3){
+            var isActive = e3.id === activeEstId;
+            return <div key={e3.id} style={{display:"flex",alignItems:"center",gap:"4px",marginBottom:"2px"}}>
+              <button type="button" onClick={function(){setActiveEstId(e3.id);setActiveTab("tracker")}} style={{flex:1,textAlign:"left",padding:"7px 10px",borderRadius:C.rs,border:"none",background:isActive?"#2563eb":"transparent",color:isActive?"#fff":"#cbd5e1",fontSize:"12px",fontWeight:isActive?700:400,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                {"📄"} {e3.name}
+              </button>
+              {rc.canCreate ? <button type="button" onClick={deleteEstimate.bind(null,e3.id)} style={{background:"transparent",border:"none",color:"#64748b",fontSize:"11px",padding:"4px",flexShrink:0}}>{"✕"}</button> : null}
+            </div>;
+          })}
+          {rc.canCreate ? <button type="button" onClick={function(){setShowNewEst(true)}} style={{width:"100%",padding:"7px 10px",background:"transparent",border:"1px dashed #475569",borderRadius:C.rs,color:"#94a3b8",fontSize:"12px",marginTop:"6px",textAlign:"left"}}>+ Новая смета</button> : null}
+        </div> : <div style={{padding:"12px",flex:1,color:"#64748b",fontSize:"13px"}}>Выберите проект</div>}
+
+        <div style={{padding:"12px",borderTop:"1px solid #334155"}}>
+          <button type="button" onClick={doLogout} style={{width:"100%",padding:"8px",background:"transparent",border:"1px solid #475569",borderRadius:C.rs,color:"#94a3b8",fontSize:"13px"}}>Выйти</button>
+        </div>
+      </div>
+
+      {/* ═══ ОСНОВНАЯ ОБЛАСТЬ ═══ */}
+      <div style={{flex:1,minWidth:0}}>
+        {/* Шапка */}
+        <div style={{background:"#fff",borderBottom:"1px solid "+C.brd,padding:"12px 24px",display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:100}}>
+          <div>
+            {activeProject ? <div>
+              <span style={{fontSize:"16px",fontWeight:700}}>{activeProject.name}</span>
+              {est ? <span style={{color:C.tm,fontSize:"14px"}}> / {est.name}</span> 
