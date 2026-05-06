@@ -351,6 +351,8 @@ function TrackerModule(props) {
     else if(statusFilter==="no_cert") filtered=filtered.filter(function(i){return i.certificate==="none"&&i.status!=="not_ordered"});
     else if(statusFilter==="custom") filtered=filtered.filter(function(i){return i.custom_made});
     else if(statusFilter==="urgent") filtered=filtered.filter(function(i){
+      var wt=i.type==="work"||i.type==="transport";
+      if(wt){var dw=daysLeft(i.work_due_date);return dw!==null&&dw<=14&&(i.work_status||"not_started")!=="done"}
       var d=daysLeft(i.priority_date); return(d!==null&&d<=14&&i.status==="not_ordered")||(i.custom_made&&i.status==="not_ordered");
     });
     else if(statusFilter==="replacement") filtered=filtered.filter(function(i){return i.needs_replacement});
@@ -397,7 +399,7 @@ function TrackerModule(props) {
           {[
             {key:"no_cert",label:"Без серт.",count:all.filter(function(i){return i.certificate==="none"&&i.status!=="not_ordered"}).length},
             {key:"custom",label:"Под заказ",count:all.filter(function(i){return i.custom_made}).length},
-            {key:"urgent",label:"Горящие",count:all.filter(function(i){var d=daysLeft(i.priority_date);return(d!==null&&d<=14&&i.status==="not_ordered")||(i.custom_made&&i.status==="not_ordered")}).length},
+            {key:"urgent",label:"Горящие",count:all.filter(function(i){var wt=i.type==="work"||i.type==="transport";if(wt){var dw=daysLeft(i.work_due_date);return dw!==null&&dw<=14&&(i.work_status||"not_started")!=="done"}var d=daysLeft(i.priority_date);return(d!==null&&d<=14&&i.status==="not_ordered")||(i.custom_made&&i.status==="not_ordered")}).length},
             {key:"replacement",label:"Нужна замена",count:replCount,color:"#ea580c"},
           ].map(function(f){var ac=statusFilter===f.key;var col=f.color||"#f59e0b";return <button type="button" key={f.key} onClick={clickStatus.bind(null,ac?"all":f.key)} style={{padding:"5px 12px",borderRadius:"20px",fontSize:"12px",fontWeight:600,border:ac?"2px solid "+col:"1px solid "+C.brd,background:ac?col+"18":"#fff",color:ac?col:C.tm}}>{f.label} ({f.count})</button>})}
         </div>
@@ -419,22 +421,23 @@ function TrackerModule(props) {
         {filtered.map(function(item){
           var st=STATUSES.find(function(s){return s.key===item.status});
           var ti=typeInfo(item.type);
-          var dl=daysLeft(item.delivery_date);
+          var isWT=item.type==="work"||item.type==="transport";
+          var ws=WORK_STATUSES.find(function(w){return w.key===(item.work_status||"not_started")})||WORK_STATUSES[0];
           var dlP=daysLeft(item.priority_date);
-          var isUrgent=(dlP!==null&&dlP<=14&&item.status==="not_ordered")||(item.custom_made&&item.status==="not_ordered");
+          var dlW=daysLeft(item.work_due_date);
+          var isUrgent=isWT?(dlW!==null&&dlW<=14&&(item.work_status||"not_started")!=="done"):((dlP!==null&&dlP<=14&&item.status==="not_ordered")||(item.custom_made&&item.status==="not_ordered"));
           var isRepl=item.needs_replacement;
           var isEd=editingId===item.id;
           var itemComments=comments[item.id]||[];
           var qty=item.quantity_total||item.quantity||0;
           var unitPrice=qty>0&&item.total?(item.total/qty):null;
           var actUnitPrice=item.actual_price||null;
-          var isOverprice=actUnitPrice!==null&&unitPrice!==null&&actUnitPrice>unitPrice;
+          var isOverprice=!isWT&&actUnitPrice!==null&&unitPrice!==null&&actUnitPrice>unitPrice;
           var overpriceDiff=isOverprice?(actUnitPrice-unitPrice)*qty:0;
-          var ws=WORK_STATUSES.find(function(w){return w.key===(item.work_status||"not_started")})||WORK_STATUSES[0];
-          var bgColor=isForeman?ws.bg:isOverprice?"#fef2f2":isRepl?"#fff7ed":isUrgent?"#fef2f2":item.custom_made?"#fffbeb":"#fff";
-          var borderColor=isForeman?ws.color:isOverprice?C.d:isRepl?"#ea580c":st.color;
+          var cardBorder=isWT?ws.color:isOverprice?C.d:isRepl?"#ea580c":st.color;
+          var bgColor=isWT?(isUrgent?"#fef2f2":ws.bg):isOverprice?"#fef2f2":isRepl?"#fff7ed":isUrgent?"#fef2f2":item.custom_made?"#fffbeb":"#fff";
           return (
-            <div key={item.id} style={Object.assign({},cardS,{borderLeft:"4px solid "+borderColor,padding:"12px 16px",background:bgColor})}>
+            <div key={item.id} style={Object.assign({},cardS,{borderLeft:"4px solid "+cardBorder,padding:"12px 16px",background:bgColor})}>
               <div style={{display:"flex",alignItems:"flex-start",gap:"10px"}}>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{display:"flex",alignItems:"center",gap:"6px",flexWrap:"wrap"}}>
@@ -443,43 +446,50 @@ function TrackerModule(props) {
                   </div>
                   <div style={{display:"flex",gap:"6px",flexWrap:"wrap",marginTop:"4px"}}>
                     <span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:ti.color,background:ti.color+"15"}}>{ti.label}</span>
-                    {isForeman?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:ws.color,background:ws.bg}}>{ws.icon} {ws.label}</span>
+                    {isWT?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:ws.color,background:ws.bg}}>{ws.icon} {ws.label}</span>
                     :<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:st.color,background:st.bg}}>{st.icon} {st.label}</span>}
-                    {!isForeman&&item.custom_made?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:"#92400e",background:"#fef3c7"}}>Под заказ</span>:null}
+                    {!isWT&&item.custom_made?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:"#92400e",background:"#fef3c7"}}>Под заказ</span>:null}
                     {!isForeman&&isRepl?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:700,color:"#9a3412",background:"#fed7aa"}}>{"⚠"} Нужна замена</span>:null}
-                    {!isForeman&&isUrgent?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:"#991b1b",background:"#fee2e2"}}>{dlP!=null?(dlP<=0?"СРОЧНО! Заказать!":"Заказать за "+dlP+" дн."):"Под заказ — не заказано!"}</span>:null}
-                    {!isForeman&&dlP!==null&&item.priority==="high"?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:dlP<=3?"#991b1b":"#92400e",background:dlP<=3?"#fee2e2":"#fef3c7"}}>{"🔥"} Заказать до: {item.priority_date?item.priority_date.split("-").reverse().join("."):""}  {dlP<=0?" СРОЧНО!":""}</span>:null}
-                    {!isForeman&&isOverprice&&showPrices?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:700,color:"#991b1b",background:"#fee2e2"}}>{"📈"} +{fmt(overpriceDiff)} ₽</span>:null}
-                    {isForeman&&item.work_due_date?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:daysLeft(item.work_due_date)!==null&&daysLeft(item.work_due_date)<=3?"#991b1b":"#92400e",background:daysLeft(item.work_due_date)!==null&&daysLeft(item.work_due_date)<=3?"#fee2e2":"#fef3c7"}}>{"📅"} Срок: {item.work_due_date.split("-").reverse().join(".")}</span>:null}
-                    {isForeman&&item.work_start_date?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:"#475569",background:"#f1f5f9"}}>{"🗓"} Начало: {item.work_start_date.split("-").reverse().join(".")}</span>:null}
+                    {isWT&&isUrgent?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:"#991b1b",background:"#fee2e2"}}>{dlW<=0?"СРОЧНО! Просрочено!":"Завершить за "+dlW+" дн."}</span>:null}
+                    {!isWT&&isUrgent?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:"#991b1b",background:"#fee2e2"}}>{dlP!=null?(dlP<=0?"СРОЧНО! Заказать!":"Заказать за "+dlP+" дн."):"Под заказ — не заказано!"}</span>:null}
+                    {!isWT&&dlP!==null&&item.priority==="high"?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:dlP<=3?"#991b1b":"#92400e",background:dlP<=3?"#fee2e2":"#fef3c7"}}>{"🔥"} Заказать до: {item.priority_date?item.priority_date.split("-").reverse().join("."):""}  {dlP<=0?" СРОЧНО!":""}</span>:null}
+                    {!isWT&&isOverprice&&showPrices?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:700,color:"#991b1b",background:"#fee2e2"}}>{"📈"} +{fmt(overpriceDiff)} ₽</span>:null}
+                    {isWT&&item.work_due_date?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:dlW!==null&&dlW<=14?"#991b1b":"#92400e",background:dlW!==null&&dlW<=14?"#fee2e2":"#fef3c7"}}>{"📅"} Срок: {item.work_due_date.split("-").reverse().join(".")}</span>:null}
+                    {isWT&&item.work_start_date?<span style={{padding:"2px 8px",borderRadius:"12px",fontSize:"11px",fontWeight:600,color:"#475569",background:"#f1f5f9"}}>{"🗓"} Начало: {item.work_start_date.split("-").reverse().join(".")}</span>:null}
                   </div>
                   <div style={{fontSize:"12px",color:C.tm,marginTop:"4px"}}>
                     {item.code?<span>{item.code} {"·"} </span>:null}
                     {item.unit?<span>{qty} {item.unit}</span>:null}
-                    {showPrices?<span> {"·"} <span style={{fontWeight:600}}>{fmt(item.total)} ₽</span></span>:null}
-                    {showPrices&&unitPrice!==null?<span> {"·"} <span style={{color:C.p,fontWeight:600}}>{fmt(unitPrice)} ₽/{item.unit||"шт"}</span></span>:null}
-                    {showPrices&&actUnitPrice!==null?<span> {"·"} факт: <span style={{fontWeight:700,color:isOverprice?C.d:C.s}}>{fmt(actUnitPrice)} ₽/{item.unit||"шт"}</span></span>:null}
-                    {!isForeman&&item.supplier?<span> {"·"} {item.supplier}</span>:null}
+                    {!isWT&&showPrices?<span> {"·"} <span style={{fontWeight:600}}>{fmt(item.total)} ₽</span></span>:null}
+                    {!isWT&&showPrices&&unitPrice!==null?<span> {"·"} <span style={{color:C.p,fontWeight:600}}>{fmt(unitPrice)} ₽/{item.unit||"шт"}</span></span>:null}
+                    {!isWT&&showPrices&&actUnitPrice!==null?<span> {"·"} факт: <span style={{fontWeight:700,color:isOverprice?C.d:C.s}}>{fmt(actUnitPrice)} ₽/{item.unit||"шт"}</span></span>:null}
+                    {!isWT&&!isForeman&&item.supplier?<span> {"·"} {item.supplier}</span>:null}
                   </div>
                   {!isForeman&&isRepl&&item.replacement_note?<div style={{fontSize:"12px",color:"#9a3412",marginTop:"4px",fontStyle:"italic"}}>{"💬"} {item.replacement_note}</div>:null}
                 </div>
                 <button type="button" onClick={function(){setEditingId(isEd?null:item.id)}} style={{background:"transparent",border:"none",fontSize:"18px",color:C.p,padding:"4px 8px"}}>{isEd?"✕":canEdit?"✎":"💬"}</button>
               </div>
 
-              {isEd&&canEdit&&isForeman ? <div style={{marginTop:"12px",paddingTop:"12px",borderTop:"1px solid "+C.brd}}>
+              {isEd&&canEdit&&isWT ? <div style={{marginTop:"12px",paddingTop:"12px",borderTop:"1px solid "+C.brd}}>
                 <div style={{marginBottom:"12px"}}><label style={lblS}>Статус работы</label>
                   <div style={{display:"flex",gap:"4px",flexWrap:"wrap"}}>
                     {WORK_STATUSES.map(function(w2){var ac=(item.work_status||"not_started")===w2.key;return <button type="button" key={w2.key} onClick={doUpdate.bind(null,item.id,{work_status:w2.key})} style={{padding:"5px 12px",borderRadius:"16px",border:ac?"2px solid "+w2.color:"1px solid "+C.brd,background:ac?w2.bg:"#fff",color:ac?w2.color:C.tm,fontSize:"12px",fontWeight:ac?700:500}}>{w2.icon} {w2.label}</button>})}
                   </div>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"12px"}}>
-                  <div><label style={lblS}>{"🗓"} Дата начала работ</label><DatePicker value={item.work_start_date||""} onChange={function(v){doUpdate(item.id,{work_start_date:v||null})}} /></div>
-                  <div><label style={lblS}>{"📅"} Срок завершения</label><DatePicker value={item.work_due_date||""} onChange={function(v){doUpdate(item.id,{work_due_date:v||null})}} /></div>
+                  <div><label style={lblS}>{"🗓"} Дата начала работы</label><DatePicker value={item.work_start_date||""} onChange={function(v){doUpdate(item.id,{work_start_date:v||null})}} /></div>
+                  <div><label style={lblS}>{"📅"} Завершить к</label><DatePicker value={item.work_due_date||""} onChange={function(v){doUpdate(item.id,{work_due_date:v||null})}} /></div>
                 </div>
+                {!isForeman?<div style={{marginBottom:"12px",display:"flex",gap:"8px",flexWrap:"wrap"}}>
+                  <button type="button" onClick={function(){
+                    if(item.needs_replacement){doUpdate(item.id,{needs_replacement:false,replacement_note:""})}
+                    else{var note=prompt("Причина замены (необязательно):");doUpdate(item.id,{needs_replacement:true,replacement_note:note||""})}
+                  }} style={{padding:"5px 12px",borderRadius:"16px",border:item.needs_replacement?"2px solid #ea580c":"1px solid "+C.brd,background:item.needs_replacement?"#fff7ed":"#fff",color:item.needs_replacement?"#9a3412":C.tm,fontSize:"12px",fontWeight:item.needs_replacement?700:500}}>{item.needs_replacement?"⚠ Замена запрошена":"☐ Нужна замена"}</button>
+                </div>:null}
                 <div><label style={lblS}>Заметки</label><textarea defaultValue={item.notes||""} onBlur={function(e){doUpdate(item.id,{notes:e.target.value})}} rows={2} style={Object.assign({},inputS,{resize:"vertical"})} /></div>
               </div> : null}
 
-              {isEd&&canEdit&&!isForeman ? <div style={{marginTop:"12px",paddingTop:"12px",borderTop:"1px solid "+C.brd}}>
+              {isEd&&canEdit&&!isWT ? <div style={{marginTop:"12px",paddingTop:"12px",borderTop:"1px solid "+C.brd}}>
                 <div style={{marginBottom:"12px"}}><label style={lblS}>Статус</label>
                   <div style={{display:"flex",gap:"4px",flexWrap:"wrap"}}>
                     {STATUSES.map(function(s){var ac=item.status===s.key;return <button type="button" key={s.key} onClick={doUpdate.bind(null,item.id,{status:s.key})} style={{padding:"5px 10px",borderRadius:"16px",border:ac?"2px solid "+s.color:"1px solid "+C.brd,background:ac?s.bg:"#fff",color:ac?s.color:C.tm,fontSize:"12px",fontWeight:ac?700:500}}>{s.icon} {s.label}</button>})}
@@ -563,7 +573,7 @@ function SummaryModule(props) {
   var closed=items.filter(function(i){return i.status==="delivered"||i.status==="installed"}).length;
   var replItems=items.filter(function(i){return i.needs_replacement});
   var customNO=items.filter(function(i){return i.custom_made&&i.status==="not_ordered"});
-  var urgent=items.filter(function(i){var d=daysLeft(i.priority_date);return(d!==null&&d<=14&&i.status==="not_ordered")||(i.custom_made&&i.status==="not_ordered")});
+  var urgent=items.filter(function(i){var wt=i.type==="work"||i.type==="transport";if(wt){var dw=daysLeft(i.work_due_date);return dw!==null&&dw<=14&&(i.work_status||"not_started")!=="done"}var d=daysLeft(i.priority_date);return(d!==null&&d<=14&&i.status==="not_ordered")||(i.custom_made&&i.status==="not_ordered")});
   var byStatus=STATUSES.map(function(s){var si=items.filter(function(i){return i.status===s.key});var sum=0;si.forEach(function(i){sum+=(i.total||0)});return{label:s.label,color:s.color,count:si.length,sum:sum}});
   var byType=TYPES.map(function(t){var ti2=items.filter(function(i){return i.type===t.key});var sum=0;ti2.forEach(function(i){sum+=(i.total||0)});return{label:t.label,color:t.color,count:ti2.length,sum:sum}}).filter(function(t){return t.count>0});
   return (
@@ -582,7 +592,7 @@ function SummaryModule(props) {
         <h3 style={{margin:"0 0 12px",fontSize:"15px",color:C.d}}>Требуют внимания</h3>
         {replItems.length>0?<div style={{marginBottom:"8px"}}><div style={{fontSize:"13px",fontWeight:700,color:"#9a3412",marginBottom:"4px"}}>{"⚠"} Ожидают замены ({replItems.length}):</div>{replItems.map(function(i){return <div key={i.id} style={{padding:"3px 0",fontSize:"13px"}}>#{i.num} {i.name}{i.replacement_note?" — "+i.replacement_note:""}</div>})}</div>:null}
         {customNO.length>0?<div style={{marginBottom:"8px"}}><div style={{fontSize:"13px",fontWeight:700,color:"#92400e",marginBottom:"4px"}}>Под заказ — не заказано ({customNO.length}):</div>{customNO.map(function(i){return <div key={i.id} style={{padding:"3px 0",fontSize:"13px"}}>#{i.num} {i.name} — <span style={{color:C.d}}>{fmt(i.total)} ₽</span></div>})}</div>:null}
-        {urgent.length>0?<div><div style={{fontSize:"13px",fontWeight:700,color:C.d,marginBottom:"4px"}}>Горящие — заказать в ближайшие 14 дней ({urgent.length}):</div>{urgent.map(function(i){var d=daysLeft(i.priority_date);return <div key={i.id} style={{padding:"3px 0",fontSize:"13px"}}>#{i.num} {i.name} — {d!==null?(d<=0?<span style={{color:C.d,fontWeight:700}}>СРОЧНО!</span>:d+" дн."):i.custom_made?"под заказ, не заказано":""}</div>})}</div>:null}
+        {urgent.length>0?<div><div style={{fontSize:"13px",fontWeight:700,color:C.d,marginBottom:"4px"}}>Горящие ({urgent.length}):</div>{urgent.map(function(i){var wt=i.type==="work"||i.type==="transport";var d=wt?daysLeft(i.work_due_date):daysLeft(i.priority_date);return <div key={i.id} style={{padding:"3px 0",fontSize:"13px"}}>#{i.num} {i.name} — {d!==null?(d<=0?<span style={{color:C.d,fontWeight:700}}>ПРОСРОЧЕНО!</span>:d+" дн."):i.custom_made?"под заказ, не заказано":""}</div>})}</div>:null}
       </div>:null}
     </div>
   );
@@ -824,12 +834,12 @@ function App() {
     var statusName = expStatus==="all"?"Все статусы":(STATUSES.find(function(s){return s.key===expStatus})||{}).label||expStatus;
 
     var title = (activeProject?activeProject.name+" / ":"")+est.name;
-    var isWorkOnly = expType==="work";
+    var isWorkTransport = expType==="work"||expType==="transport";
     var headerCols, colWidths, mergeEnd;
-    if(isWorkOnly){
-      headerCols=["№ п/п","№ сметы","Наименование","Ед. изм.","Кол-во","Стоимость (смета), ₽","Цена за ед., ₽","Статус","Поставщик","Сертификат","Примечания"];
-      colWidths=[{wch:6},{wch:8},{wch:45},{wch:8},{wch:8},{wch:16},{wch:14},{wch:14},{wch:20},{wch:12},{wch:40}];
-      mergeEnd=10;
+    if(isWorkTransport){
+      headerCols=["№ п/п","№ сметы","Наименование","Ед. изм.","Кол-во","Статус","Дата начала","Завершить к","Примечания"];
+      colWidths=[{wch:6},{wch:8},{wch:45},{wch:8},{wch:8},{wch:14},{wch:14},{wch:14},{wch:40}];
+      mergeEnd=8;
     } else {
       headerCols=["№ п/п","№ сметы","Обоснование","Наименование","Ед. изм.","Кол-во","Стоимость (смета), ₽","Цена за ед., ₽","Статус","Поставщик","Факт. цена за ед., ₽","Факт. стоимость, ₽","Разница, ₽","Сертификат","Примечания"];
       colWidths=[{wch:6},{wch:8},{wch:22},{wch:45},{wch:8},{wch:8},{wch:16},{wch:14},{wch:14},{wch:20},{wch:14},{wch:16},{wch:14},{wch:12},{wch:40}];
@@ -857,10 +867,11 @@ function App() {
       if (item.needs_replacement) notes.push("ЗАМЕНА"+(item.replacement_note?" — "+item.replacement_note:""));
       var cmts=(comments[item.id]||[]).map(function(c){return c.author_name+": "+c.text}).join("; ");
       if (cmts) notes.push(cmts);
-      if(isWorkOnly){
+      if(isWorkTransport){
+        var ws2=WORK_STATUSES.find(function(w){return w.key===(item.work_status||"not_started")})||WORK_STATUSES[0];
         rows.push([idx+1, item.num, item.name, item.unit, qty,
-          item.total, up, st2?st2.label:"", item.supplier||"",
-          cert?cert.label:"", notes.join("\n")]);
+          ws2.label, item.work_start_date||"", item.work_due_date||"",
+          notes.join("\n")]);
       } else {
         rows.push([idx+1, item.num, item.code, item.name, item.unit, qty,
           item.total, up, st2?st2.label:"", item.supplier||"",
@@ -869,8 +880,8 @@ function App() {
       }
     });
     rows.push([]);
-    if(isWorkOnly){
-      rows.push(["","","ИТОГО:","","",totalSmeta,"","","","",""]);
+    if(isWorkTransport){
+      rows.push(["","","ИТОГО:","","","","","",""]);
     } else {
       rows.push(["","","","ИТОГО:","","",totalSmeta,"","","","",totalFact>0?totalFact:null,totalFact>0?(totalFact-totalSmeta):null,"",""]);
     }
