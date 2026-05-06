@@ -74,9 +74,9 @@ var TYPES = [
 ];
 
 var ROLE_CONFIG = {
-  manager: { label: "Менеджер",    canEdit: true,  canReplace: true,  canCreate: true  },
-  owner:   { label: "Собственник", canEdit: false, canReplace: false, canCreate: false },
-  foreman: { label: "Прораб",      canEdit: true,  canReplace: false, canCreate: false },
+  manager: { label: "Менеджер",    canEdit: true,  canReplace: true,  canCreate: true,  canUpload: true  },
+  owner:   { label: "Собственник", canEdit: true,  canReplace: true,  canCreate: false, canUpload: true  },
+  foreman: { label: "Прораб",      canEdit: true,  canReplace: false, canCreate: false, canUpload: false },
 };
 
 // ─── Утилиты ───
@@ -525,15 +525,6 @@ function TrackerModule(props) {
                 </div>
               </div> : null}
 
-              {isEd&&!canEdit&&isOwner ? <div style={{marginTop:"12px",paddingTop:"12px",borderTop:"1px solid "+(isRepl?"#fed7aa":C.brd),background:isRepl?"#fff7ed":"#f8fafc",margin:"-12px -16px -20px",padding:"16px",borderRadius:"0 0 11px 11px"}}>
-                {isRepl?<div><div style={{fontSize:"13px",fontWeight:700,color:"#9a3412",marginBottom:"8px"}}>{"⚠"} Менеджер запросил замену</div>
-                {item.replacement_note?<div style={{fontSize:"13px",color:"#9a3412",marginBottom:"8px",fontStyle:"italic"}}>Причина: {item.replacement_note}</div>:null}
-                <p style={{fontSize:"12px",color:C.ts,marginBottom:"8px"}}>Оставьте комментарий с решением.</p></div>:null}
-                {(item.type==="work"||item.type==="transport")?<div style={{marginTop:isRepl?"12px":"0"}}>
-                  <label style={lblS}>{"📅"} Срок завершения работы</label>
-                  <DatePicker value={item.work_due_date||""} onChange={function(v){props.onUpdateItem(item.id,{work_due_date:v||null})}} />
-                </div>:null}
-              </div> : null}
 
               {isEd ? <div style={{marginTop:"10px",paddingTop:"10px",borderTop:"1px solid "+C.brd}}>
                 <label style={lblS}>{"💬"} Комментарии ({itemComments.length})</label>
@@ -1060,14 +1051,14 @@ function App() {
             <div style={{display:"flex",gap:"2px",background:"#f1f5f9",borderRadius:"10px",padding:"3px",marginBottom:"16px"}}>
               {tabs.map(function(tab){
                 var active=activeTab===tab.key;
-                if(tab.key==="upload"&&!rc.canCreate) return null;
+                if(tab.key==="upload"&&!rc.canUpload) return null;
                 if(tab.key==="summary"&&role==="foreman") return null;
                 return <button type="button" key={tab.key} onClick={function(){setActiveTab(tab.key)}} style={{flex:1,padding:"10px 8px",border:"none",borderRadius:C.rs,fontWeight:600,fontSize:"13px",background:active?"#fff":"transparent",color:active?C.p:C.tm,boxShadow:active?"0 1px 3px rgba(0,0,0,.06)":"none"}}>
                   {tab.icon} {tab.label} {tab.count!=null?" ("+tab.count+")":""}
                 </button>;
               })}
             </div>
-            {activeTab==="upload"&&rc.canCreate ? <UploadModule onImport={handleImport} itemCount={items.length} /> : null}
+            {activeTab==="upload"&&rc.canUpload ? <UploadModule onImport={handleImport} itemCount={items.length} /> : null}
             {activeTab==="tracker" ? <TrackerModule items={items} comments={comments} role={role} onUpdateItem={updateItem} onAddComment={addComment} /> : null}
             {activeTab==="summary" ? <SummaryModule items={items} /> : null}
           </div>}
