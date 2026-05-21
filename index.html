@@ -529,10 +529,14 @@ function TrackerModule(props) {
               {isEd ? <div style={{marginTop:"10px",paddingTop:"10px",borderTop:"1px solid "+C.brd}}>
                 <label style={lblS}>{"💬"} Комментарии ({itemComments.length})</label>
                 {itemComments.map(function(c3){
+                  var canDelete = props.userId && (c3.author_id === props.userId || rc.canCreate);
                   return <div key={c3.id} style={{padding:"6px 10px",marginBottom:"4px",background:"#f8fafc",borderRadius:C.rs,fontSize:"13px",border:"1px solid #f1f5f9"}}>
-                    <div style={{display:"flex",justifyContent:"space-between",marginBottom:"2px"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",marginBottom:"2px",alignItems:"center"}}>
                       <span style={{fontWeight:700,color:C.p,fontSize:"12px"}}>{c3.author_name} ({ROLE_CONFIG[c3.author_role]?ROLE_CONFIG[c3.author_role].label:c3.author_role})</span>
-                      <span style={{fontSize:"11px",color:C.tm}}>{c3.created_at?new Date(c3.created_at).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}):""}</span>
+                      <span style={{display:"flex",alignItems:"center",gap:"6px"}}>
+                        <span style={{fontSize:"11px",color:C.tm}}>{c3.created_at?new Date(c3.created_at).toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}):""}</span>
+                        {canDelete ? <button type="button" title="Удалить комментарий" onClick={function(){if(confirm("Удалить комментарий?")){props.onDeleteComment(c3.id, item.id)}}} style={{background:"transparent",border:"none",color:"#94a3b8",cursor:"pointer",padding:"0 4px",fontSize:"14px",lineHeight:1}}>{"✕"}</button> : null}
+                      </span>
                     </div>
                     <div>{c3.text}</div>
                   </div>;
@@ -695,6 +699,14 @@ function App() {
           return copy;
         });
       })
+      .on("postgres_changes", {event:"DELETE",schema:"public",table:"comments"}, function(payload) {
+        var c = payload.old;
+        setComments(function(prev) {
+          var copy = Object.assign({}, prev);
+          if (copy[c.item_id]) copy[c.item_id] = copy[c.item_id].filter(function(x){return x.id !== c.id});
+          return copy;
+        });
+      })
       .subscribe();
     return function() { sb.removeChannel(channel); };
   }, [est ? est.id : null]);
@@ -802,6 +814,17 @@ function App() {
           return copy;
         });
       }
+    });
+  }
+
+  function deleteComment(commentId, itemId) {
+    sb.from("comments").delete().eq("id", commentId).then(function(res) {
+      if (res.error) { alert("Не удалось удалить комментарий: " + res.error.message); return; }
+      setComments(function(prev) {
+        var copy = Object.assign({}, prev);
+        if (copy[itemId]) copy[itemId] = copy[itemId].filter(function(c){return c.id !== commentId});
+        return copy;
+      });
     });
   }
 
@@ -1059,7 +1082,7 @@ function App() {
               })}
             </div>
             {activeTab==="upload"&&rc.canUpload ? <UploadModule onImport={handleImport} itemCount={items.length} /> : null}
-            {activeTab==="tracker" ? <TrackerModule items={items} comments={comments} role={role} onUpdateItem={updateItem} onAddComment={addComment} /> : null}
+            {activeTab==="tracker" ? <TrackerModule items={items} comments={comments} role={role} userId={user?user.id:null} onUpdateItem={updateItem} onAddComment={addComment} onDeleteComment={deleteComment} /> : null}
             {activeTab==="summary" ? <SummaryModule items={items} /> : null}
           </div>}
         </div>
